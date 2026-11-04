@@ -44,18 +44,33 @@ python main.py
 ## 测试与静态检查
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest          # 75 个用例，Qt 相关走 offscreen 后端
+.\.venv\Scripts\python.exe -m pytest          # 77 个用例，Qt 相关走 offscreen 后端
 .\.venv\Scripts\python.exe -m ruff check .    # 规则集见 pyproject.toml
 ```
 
 ## 打包
+
+### 便携版（单文件，双击即开）
+
+```powershell
+pyinstaller EnglishLessonHelper-portable.spec
+# 产物：dist\EnglishLessonHelper-portable.exe（约 40 MB）
+```
+
+- **只产出一个 exe**，拷到任意文件夹/U 盘即可运行，不需要安装
+- 不弹 UAC；需要「网络工具箱」的修复动作时，右键「以管理员身份运行」
+- 数据写在 **exe 同级目录**：`accounts.json`、`task_progress.json`、`ismart_profile.json`、`logs/`
+- 端口令由当前 Windows 用户的 DPAPI 加密，换机器/换用户需要重新输入密码
+- 首次启动稍慢（onefile 会先解包到临时目录），之后正常
+
+### 文件夹版（onedir，启动更快）
 
 ```powershell
 pyinstaller EnglishLessonHelper.spec
 # 产物：dist\EnglishLessonHelper\EnglishLessonHelper.exe
 ```
 
-`.spec` 只打包 `style.qss`，**不会**打包 `accounts.json`、`task_progress.json` 等本机数据。
+两个 `.spec` 都只打包 `style.qss`，**不会**打包 `accounts.json`、`task_progress.json` 等本机数据。
 需要窗口图标与背景图时，在仓库根放 `app.ico` / `app_bg.png`，再把它们加回 `.spec` 的 `datas`。
 
 ## 项目结构
@@ -90,6 +105,8 @@ ui/
 tests/                      单元测试 + offscreen 冒烟测试
 style.qss                   全局样式表
 version_info.txt            exe 版本资源（由 .spec 引用）
+EnglishLessonHelper.spec          文件夹版打包脚本
+EnglishLessonHelper-portable.spec 便携单文件打包脚本
 ```
 
 ## 数据文件

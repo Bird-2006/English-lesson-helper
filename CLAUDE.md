@@ -29,13 +29,21 @@
 # 静态检查
 .\.venv\Scripts\python.exe -m ruff check .
 
-# 打包（onedir）
-pyinstaller EnglishLessonHelper.spec
+# 打包
+pyinstaller EnglishLessonHelper.spec            # 文件夹版 → dist\EnglishLessonHelper\EnglishLessonHelper.exe
+pyinstaller EnglishLessonHelper-portable.spec   # 便携单文件 → dist\EnglishLessonHelper-portable.exe（约 40MB）
 ```
 
+**便携版（onefile）要点**：`uac_admin=False`（双击即开，不弹 UAC；网络修复需手动「以管理员身份运行」），
+数据写在 exe 同级目录（`paths.app_dir()` 在 frozen 时返回 exe 目录，而不是 `_MEIPASS` 临时目录），
+`style.qss` 仍从 `_MEIPASS` 读取。首次启动因解包会慢几秒。
+
 已知环境限制：**PyInstaller 构建要求 Python 解释器（含 PyQt5 安装目录）位于纯 ASCII 路径**。
-中文路径下 Qt 会把前缀转成 `?`，报 `Qt plugin directory ... does not exist`。解法：在 ASCII 路径
-（如 `C:\Temp\el_venv`）建解释器并安装依赖，源码也复制到 ASCII 路径后构建。源码运行与 pytest 不受影响。
+中文路径下 Qt 会把前缀转成 `?`，报 `Qt plugin directory ... does not exist`。
+解法（无需联网）：把仓库 `.venv` 直接 `robocopy` 到 ASCII 路径（如 `C:\Temp\el_venv`，
+拷过去即可用，venv 按可执行文件位置定位），源码也复制到 ASCII 路径（如 `C:\Temp\el_build`，
+排除 `.venv` / `logs` / `dist` / `build` / 私有 json），再用 `C:\Temp\el_venv\Scripts\python.exe -m PyInstaller ...` 在那边构建。
+源码运行与 pytest 不受此限制影响。
 
 ## 目录结构
 
@@ -69,7 +77,8 @@ ui/
 tests/                     单元测试 + offscreen 冒烟
 style.qss                  全局样式表
 version_info.txt           exe 版本资源（6.0.1.0），由 .spec 的 version= 引用
-EnglishLessonHelper.spec   PyInstaller 打包脚本
+EnglishLessonHelper.spec   PyInstaller 打包脚本（onedir 文件夹版）
+EnglishLessonHelper-portable.spec  便携单文件打包脚本（onefile，uac_admin=False）
 ```
 
 删除过的死代码/素材：`core/batch_manager.py`、`core/reward_data.py`、`reward_base64.txt`、`admin.manifest`、
@@ -153,6 +162,9 @@ EnglishLessonHelper.spec   PyInstaller 打包脚本
 - `ruff check .`：0 问题（`E4/E7/E9/F/I/UP032/B006/B008/B904`，忽略 `E501`）。
 - offscreen 冒烟：主窗口构建、7 列表格渲染、WeLearn 账号显示、正常退出。
 - 打包实测（ASCII 路径下）：产物含 `style.qss`，不含 `accounts.json`，exe 版本资源生效。
+- 便携版实测：`dist\EnglishLessonHelper-portable.exe` 40.39MB；`VersionInfo` 为 6.0.1.0；
+  清单为 `asInvoker`（无 UAC）；双击后进程存活、在 **exe 同级** 生成 `logs/WeLearnV4_*.log`，
+  日志首行为 `English Lesson Helper V6.0.1 启动`。
 - 本机 `accounts.json` 口令为 DPAPI 密文。
 
 ## 修改约定
