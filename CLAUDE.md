@@ -4,13 +4,13 @@
 
 ## 项目概述
 
-**English Lesson Helper V6.0.4**（包名 `english-lesson-helper`）：Windows 桌面 GUI，把两个英语网课平台
+**English Lesson Helper V6.1.0**（包名 `english-lesson-helper`）：Windows 桌面 GUI，把两个英语网课平台
 收敛到同一套界面与任务流程：
 
 | 平台 | 适配器 | 接入方式 | 能力 |
 | --- | --- | --- | --- |
 | WeLearn（welearn.sflep.com） | `core/platforms/welearn.py` | 账号口令 → 直连 HTTP 接口 | 刷作业 + 刷时长 |
-| iSmart（外语智能学习平台） | `core/platforms/ismart.py` | Chrome DevTools Protocol 驱动本地客户端页面 | 仅刷作业（刷时长需 `ut` 签名，未实现） |
+| iSmart（外语智能学习平台） | `core/platforms/ismart.py`（流程引擎 `ismart_flow.py`） | CDP 驱动真实页面（桌面客户端或本机 Edge/Chrome） | 刷作业（录制流程回放）+ 刷时长（保持页面活跃） |
 
 - 技术栈：Python 3.9+ / PyQt5（Widgets）/ requests / openpyxl / websocket-client；状态全在本地 JSON。
 - 仓库内不含任何个人署名、联系方式或上游仓库地址。
@@ -23,7 +23,7 @@
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe main.py
 
-# 测试（109 个用例；Qt 相关走 offscreen，conftest.py 已配好插件路径）
+# 测试（127 个用例；Qt 相关走 offscreen，conftest.py 已配好插件路径）
 .\.venv\Scripts\python.exe -m pytest
 
 # 静态检查
@@ -67,6 +67,7 @@ core/
     __init__.py            注册表：CLIENTS / PLATFORMS / create_client / name_from_key
     welearn.py             WeLearnClient（HTTP 直连）
     ismart.py              ISmartClient（CDP）+ ISmartProfile（可配置脚本）
+    ismart_flow.py         录制/回放引擎：build_steps / FlowRunner / 保持活跃脚本
 ui/
   helpers.py               消息框工厂、图标、背景图缓存
   main_window.py           WeLearnUI：主窗口/托盘/启动声明/退出流程/CHANGELOG
@@ -76,7 +77,7 @@ ui/
   network_fix_dialog.py    网络工具箱
 tests/                     单元测试 + offscreen 冒烟
 style.qss                  全局样式表
-version_info.txt           exe 版本资源（6.0.4.0），由 .spec 的 version= 引用
+version_info.txt           exe 版本资源（6.1.0.0），由 .spec 的 version= 引用
 EnglishLessonHelper.spec   PyInstaller 打包脚本（onedir 文件夹版）
 EnglishLessonHelper-portable.spec  便携单文件打包脚本（onefile，uac_admin=False）
 ```
@@ -99,8 +100,8 @@ EnglishLessonHelper-portable.spec  便携单文件打包脚本（onefile，uac_a
 | `simulate_time(..., stop_event=None)` | 挂时长；不支持时返回 `False` 并设 `last_error_code=unsupported` |
 | `close()` | 释放会话 |
 
-能力位 `Capability.HOMEWORK / DURATION / CDP` 决定界面显示：iSmart 没有 `DURATION`，详情窗不会出现
-「刷时长」模式，也不会自动衔接刷时长。
+能力位 `Capability.HOMEWORK / DURATION / CDP` 决定界面显示：两个平台现在都同时具备
+刷作业与刷时长；`CDP` 只给 iSmart（决定是否显示「启动并连接 / 浏览器模式 / 抓取页面结构 / 录制流程」）。
 
 新增平台步骤：写一个 `PlatformClient` 子类 → 在 `core/platforms/__init__.py` 的 `CLIENTS` / `PLATFORMS`
 注册 → 若需要新的界面控件，用 `client.supports(Capability.X)` 分支。
@@ -154,12 +155,19 @@ EnglishLessonHelper-portable.spec  便携单文件打包脚本（onefile，uac_a
    `Page.captureScreenshot`；
 4. 三个默认 JS（`courses_js` / `units_js` / `tasks_js`）都是**启发式 DOM 扫描**，结果为空时返回
    可操作的中文提示（让你去抓页面结构改配置）；
-5. 提交流程是 `submit_steps` 列表，支持 `click_task`（按 `scoid`） / `click_text`（按按钮文案） /
-   `wait_ms` / `eval` / `expect_ok`；任一步失败即整门课记失败；
-6. `dump_page()` 导出 HTML + PNG 到 `<数据目录>/dumps/`，是校准选择器的唯一入口。
+5. 提交流程：**优先用录制流程**（`profile.recorded_steps`，由「⏺ 录制流程」生成，
+   `{scoid}` 占位符按当前任务替换）；没有录制时回落到默认 `submit_steps`
+   （`click_task` / `click_text` / `wait_ms` / `eval` / `expect_ok`）；
+6. `dump_page()` 导出 HTML + PNG 到 `<数据目录>/dumps/`，是校准选择器的唯一入口；
+7. **录制/回放引擎** `core/platforms/ismart_flow.py`：注入点击监听（capture 阶段）→
+   记录 `{t, selector, text, href}` → `build_steps()` 转步骤（相邻间隔转 `wait`，
+   `[data-scoid=...]` 占位符化，重复点击合并）→ `FlowRunner.run()` 用 CDP 执行；
+8. **刷时长**：`simulate_time()` 先点开任务，注入 15 秒一次的轻量鼠标/滚动活动
+   （`KEEPALIVE_START_JS`）并 `Page.bringToFront`，`Event.wait` 可中断，结束移除脚本。
+   是否计入由平台决定 —— 本工具只负责让页面「看起来一直有人在看」。
 
-⚠️ iSmart 未实现的部分：`ut` 签名直连（社区做法是 unidbg/Frida 还原 so，或复刻签名服务），
-以及刷时长。要补这两块，先逆向客户端 so，再把签名接到 `ISmartClient` 之上，不要凭空编造接口。
+⚠️ iSmart 仍未做的部分：`ut` 签名直连（脱离页面自己发请求）。刷作业已经绕开它
+（签名由页面在发送瞬间生成），但要做到「纯后台、不开页面」仍需逆向客户端 so。
 
 ## 状态回传与断点续跑
 
@@ -176,16 +184,19 @@ EnglishLessonHelper-portable.spec  便携单文件打包脚本（onefile，uac_a
 
 ## 测试与验证现状
 
-- `pytest`：109 用例全绿。含 `test_platforms.py`（注册表、契约、iSmart 无客户端时的失败路径、
+- `pytest`：127 用例全绿。含 `test_platforms.py`（注册表、契约、iSmart 无客户端时的失败路径、
   配置读写、步骤引擎成功/失败/未知步骤、dump_page、core.api 兼容层）、`test_ismart_discovery.py`
-  （CDP 端口探测、客户端/浏览器定位、带调试参数启动、超时、错误信息可读性、浏览器模式）与
-  `test_ismart_session.py`（sessionId 注入、事件帧跳过、附着重试与放弃）。
+  （CDP 端口探测、客户端/浏览器定位、带调试参数启动、超时、错误信息可读性、浏览器模式）、
+  `test_ismart_session.py`（sessionId 注入、事件帧跳过、附着重试与放弃）与
+  `test_ismart_flow.py`（事件转步骤、占位符替换、回放失败/兜底、录制存盘、挂时长可中断）。
 - `ruff check .`：0 问题（`E4/E7/E9/F/I/UP032/B006/B008/B904`，忽略 `E501`）。
 - offscreen 冒烟：主窗口构建、7 列表格渲染、WeLearn 账号显示、正常退出。
 - 打包实测（ASCII 路径下）：产物含 `style.qss`，不含 `accounts.json`，exe 版本资源生效。
-- 便携版实测：`dist\EnglishLessonHelper-portable.exe` 40.40MB；`VersionInfo` 为 6.0.4.0；
+- 便携版实测：`dist\EnglishLessonHelper-portable.exe` 40.40MB；`VersionInfo` 为 6.1.0.0；
   清单为 `asInvoker`（无 UAC）；双击后是 1 个 bootloader + 1 个应用进程，在 **exe 同级** 生成
-  `logs/WeLearnV4_*.log`，日志首行为 `English Lesson Helper V6.0.4 启动`。
+  `logs/WeLearnV4_*.log`，日志首行为 `English Lesson Helper V6.1.0 启动`。
+- 录制/回放/挂时长端到端实测（Edge + 本地页面，3 秒时长）：录制到「点任务 + 点提交」两步 →
+  换成任务 s2 回放 → 页面标题变成 `submitted-open-s2` → 挂时长实际耗时 ≥2.5s 且页面仍可用。
 - 浏览器模式端到端实测（Edge 156）：带调试端口启动 → 附着 → `document.title` 读取正确 →
   默认 `courses_js` 解析出课程、默认 `tasks_js` 解析出任务 → `dump_page` 落盘 HTML。
 - 构建踩坑：仓库里若存在运行中的 `browser-profile/`（浏览器锁文件），`robocopy` 默认无限重试会卡死，
@@ -207,9 +218,10 @@ EnglishLessonHelper-portable.spec  便携单文件打包脚本（onefile，uac_a
 
 ## 仍未处理的已知限制
 
-1. **iSmart 选择器需现场校准**：默认 JS 是启发式扫描，作者无法在无客户端环境下验证真实 DOM，
-   首次使用必须抓页面结构后调整 `ismart_profile.json`。
-2. **iSmart 无刷时长**：需要 `ut` 签名 + 直连接口，属于下一步逆向工作。
+1. **iSmart 选择器需现场校准**：默认 JS 与默认 `submit_steps` 是启发式默认值，
+   首次使用应「抓页面结构」+「⏺ 录制流程」按真实页面生成一次流程。
+2. **iSmart 无法脱离页面**：刷作业/刷时长都要求页面开着（签名与计时都依赖页面）；
+   要做到纯后台需要逆向客户端 native 签名。
 3. WeLearn 上游契约脆弱：`iscomplete` 依赖中文「未」字、登录依赖 `client_id=welearn_web` 与参数名。
 4. Excel 导入只支持 `.xlsx/.xlsm`（`.xls` 需另存），这是移除 pandas 的代价。
 5. `QMessageBox` 仍是模态调用，任务中途的提示会阻塞该窗口自身交互（沿用原行为）。

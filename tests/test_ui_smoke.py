@@ -161,7 +161,7 @@ def test_detail_dialog_welearn_shows_both_modes(app, monkeypatch, manager):
     dialog.close()
 
 
-def test_detail_dialog_ismart_hides_duration_and_adds_dump(app, monkeypatch, tmp_path):
+def test_detail_dialog_ismart_shows_duration_and_cdp_buttons(app, monkeypatch, tmp_path):
     import ui.account_detail as account_detail
     from core.account_manager import AccountManager
     from core.constants import TaskType
@@ -174,11 +174,12 @@ def test_detail_dialog_ismart_hides_duration_and_adds_dump(app, monkeypatch, tmp
     QApplication.processEvents()
 
     assert dialog.client.info.key == "ismart"
-    assert dialog.mode_combo.count() == 1
-    assert dialog.mode_combo.currentText() == TaskType.HOMEWORK
-    assert hasattr(dialog, "dump_btn")
-    assert hasattr(dialog, "launch_btn")
-    assert hasattr(dialog, "browser_btn")
+    # iSmart 现在两种模式都有：刷作业（录制流程回放）+ 刷时长（保持页面活跃）
+    assert dialog.mode_combo.count() == 2
+    assert dialog.mode_combo.itemText(0) == TaskType.HOMEWORK
+    assert dialog.mode_combo.itemText(1) == TaskType.DURATION
+    for attribute in ("dump_btn", "launch_btn", "browser_btn", "record_btn"):
+        assert hasattr(dialog, attribute)
     assert "iSmart" in dialog.windowTitle()
     dialog.close()
 

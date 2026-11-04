@@ -195,6 +195,12 @@ class AccountDetailDialog(QDialog):
             self.dump_btn.setToolTip("导出当前客户端页面的 HTML 与截图，用于校准选择器")
             self.dump_btn.clicked.connect(self.dump_page)
             mode_row.addWidget(self.dump_btn)
+
+            self.record_btn = QPushButton("⏺ 录制流程")
+            self.record_btn.setCheckable(True)
+            self.record_btn.setToolTip("开始录制后在窗口里手动走一遍流程，再点一次结束并保存")
+            self.record_btn.toggled.connect(self.toggle_recording)
+            mode_row.addWidget(self.record_btn)
         mode_row.addStretch()
         settings_layout.addLayout(mode_row)
 
@@ -596,6 +602,35 @@ class AccountDetailDialog(QDialog):
         self.refresh_courses_btn.setEnabled(True)
         self.update_status(AccountStatus.LOGGED_IN, immediate=True)
         self.refresh_courses()
+
+    def toggle_recording(self, checked: bool):
+        """录制 iSmart 页面操作流程（点一次开始，再点一次结束并存盘）。"""
+        if getattr(self.client, "start_recording", None) is None:
+            self.log("当前平台不支持录制流程")
+            self.record_btn.setChecked(False)
+            return
+
+        if checked:
+            if not self.client.start_recording():
+                self.log("❌ 无法开始录制：请先「🚀 启动并连接」或「🌐 浏览器模式」连上页面")
+                self.record_btn.setChecked(False)
+                return
+            self.record_btn.setText("⏹ 结束录制")
+            self.log("⏺ 已开始录制 —— 现在去页面里手动走一遍（点任务 → 答题 → 提交），完成后再点一次")
+            return
+
+        self.record_btn.setText("⏺ 录制流程")
+        steps = self.client.stop_recording() or []
+        if not steps:
+            self.log("❌ 录制结果为空（这期间没有点到页面元素）")
+            return
+        self.log(f"✅ 已保存录制流程：{len(steps)} 步（写入 ismart_profile.json）")
+        QMessageBox.information(
+            self,
+            "录制完成",
+            f"已保存 {len(steps)} 个步骤。\n之后「开始刷作业」会按这套流程逐个任务重放；\n"
+            f"想重录再点一次「⏺ 录制流程」。",
+        )
 
     def dump_page(self):
         """导出当前客户端页面结构，便于校准 iSmart 选择器。"""

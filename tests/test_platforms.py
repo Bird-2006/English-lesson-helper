@@ -71,8 +71,9 @@ def test_capabilities():
     assert not get_info("welearn").supports(Capability.CDP)
     assert get_info("ismart").supports(Capability.HOMEWORK)
     assert get_info("ismart").supports(Capability.CDP)
-    assert not get_info("ismart").supports(Capability.DURATION)
-    assert supports("ismart", Capability.DURATION) is False
+    # iSmart 的「挂时长」靠保持任务页活跃实现（不依赖 ut 签名），因此也声明 DURATION
+    assert get_info("ismart").supports(Capability.DURATION)
+    assert supports("ismart", Capability.DURATION) is True
 
 
 def test_platform_names_are_unique():
@@ -93,10 +94,11 @@ def test_ismart_login_reports_missing_debug_port():
     client.close()
 
 
-def test_ismart_simulate_time_is_unsupported():
+def test_ismart_simulate_time_reports_cdp_error_without_page():
+    """没有可附着的页面时，挂时长要干净地失败并标 cdp 错误码。"""
     client = ISmartClient(ISmartProfile(port=1))
-    assert client.simulate_time(1, "2", "3", 60) is False
-    assert client.last_error_code == "unsupported"
+    assert client.simulate_time(1, "2", "3", 1) is False
+    assert client.last_error_code == "cdp"
     client.close()
 
 

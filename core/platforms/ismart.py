@@ -36,14 +36,21 @@ from core.constants import ErrCode
 from core.logger import get_logger
 from core.paths import data_path
 from core.platforms.base import Capability, PlatformClient, PlatformInfo
+from core.platforms.ismart_flow import (
+    RECORDER_START_JS,
+    RECORDER_STOP_JS,
+    FlowError,
+    FlowRunner,
+    build_steps,
+)
 
 logger = get_logger("ISmartCDP")
 
 PLATFORM = PlatformInfo(
     key="ismart",
     name="iSmart（外语智能学习平台）",
-    description="通过 Chrome DevTools Protocol 驱动本地 iSmart 客户端完成课程任务",
-    capabilities=frozenset({Capability.HOMEWORK, Capability.CDP}),
+    description="通过 Chrome DevTools Protocol 驱动真实页面完成任务（支持录制流程回放）",
+    capabilities=frozenset({Capability.HOMEWORK, Capability.DURATION, Capability.CDP}),
 )
 
 DEFAULT_PORT = 9222
@@ -176,6 +183,8 @@ class ISmartProfile:
     #: 浏览器模式：iSmart 网页版地址（没有桌面客户端时走这条路）
     browser_url: str = ""
     browser_port: int = DEFAULT_PORT
+    #: 录制的操作流程（刷作业用；为空则回落到 submit_steps）
+    recorded_steps: List[Dict[str, Any]] = field(default_factory=list)
 
     @staticmethod
     def path() -> str:
@@ -728,6 +737,15 @@ class ISmartClient(PlatformClient):
     # ------------------------------------------------------------ 提交流程
 
     def _run_steps(self, scoid) -> List[str]:
+        # 录制过流程就优先用录制的（真实页面走位比默认启发式可靠得多）
+        if self.profile.recorded_steps:
+            try:
+                return self._runner().run(
+                    self.profile.recorded_steps, {"scoid": scoid, "task": scoid}
+                )
+            except FlowError as exc:
+                raise ISmartError(str(exc)) from exc
+
         logs: List[str] = []
         for step in self.profile.submit_steps:
             kind = step.get("kind", "")
@@ -767,10 +785,114 @@ class ISmartClient(PlatformClient):
             return 0, 1, 0, 1
         return 1, 0, 0, 1  # iSmart 没有 WeLearn 的「双通道」概念，第二路恒记为未走
 
+    # ------------------------------------------------------------ 录制 / 回放
+
+    def _runner(self) -> FlowRunner:
+        return FlowRunner(self._attach())
+
+    def start_recording(self) -> bool:
+        """开始录制点击（在客户端/浏览器窗口里手动点一遍流程）。"""
+        try:
+            return str(self._eval(RECORDER_START_JS)) in ("started", "already")
+        except ISmartError as exc:
+            self.last_error_code = ErrCode.CDP
+            logger.error("开始录制失败: %s", exc)
+            return False
+
+    def stop_recording(self) -> List[Dict[str, Any]]:
+        """结束录制，把事件转成步骤并写进配（返回生成的步骤）。"""
+        try:
+            events = self._eval(RECORDER_STOP_JS) or []
+        except ISmartError as exc:
+            self.last_error_code = ErrCode.CDP
+            logger.error("结束录制失败: %s", exc)
+            return []
+        steps = build_steps(events if isinstance(events, list) else [])
+        if not steps:
+            logger.warning("录制结果为空（可能一次都没点）")
+            return []
+        self.profile.recorded_steps = steps
+        try:
+            self.profile.save()
+        except OSError as exc:
+            logger.warning("保存录制流程失败: %s", exc)
+        logger.info("已录制 %d 个步骤", len(steps))
+        return steps
+
+    def clear_recording(self) -> None:
+        self.profile.recorded_steps = []
+        try:
+            self.profile.save()
+        except OSError as exc:
+            logger.warning("清空录制流程失败: %s", exc)
+
+    def run_recorded_flow(self, scoid=None, extra: Dict[str, Any] = None) -> Tuple[bool, str]:
+        """在录制流程上按当前任务重放（``{scoid}`` 会被替换）。"""
+        steps = self.profile.recorded_steps
+        if not steps:
+            return False, "还没有录制流程，请先点「⏺ 录制流程」在页面里手动走一遍"
+        variables = {"scoid": scoid if scoid is not None else "", "task": scoid}
+        variables.update(extra or {})
+        try:
+            logs = self._runner().run(steps, variables)
+        except FlowError as exc:
+            return False, str(exc)
+        except ISmartError as exc:
+            return False, f"回放失败: {exc}"
+        logger.info("回放完成：%s", "；".join(logs[-5:]))
+        return True, "回放完成"
+
+    # ------------------------------------------------------------ 挂时长
+
     def simulate_time(self, cid, uid, scoid, learning_time, stop_event=None) -> bool:
-        self.last_error_code = ErrCode.UNSUPPORTED
-        logger.warning("iSmart 适配器暂不支持挂时长（需要 ut 签名直连接口）")
-        return False
+        """保持任务页活跃，让平台把时间累计上去。
+
+        机制：先点开该任务，再注入 15 秒一次的轻微鼠标/滚动活动，直到时间满。
+        是否计入由平台决定；本方法只负责「让页面看起来一直有人在看」。
+        """
+        learning_time = max(1, int(learning_time))
+        try:
+            if scoid:
+                ok = self._eval(CLICK_TASK_JS % {"scoid": json.dumps(str(scoid))})
+                if not ok:
+                    logger.warning("没找到任务 %s 的元素，直接在当前页面挂时长", scoid)
+                else:
+                    time.sleep(1.5)  # 等页面切换/播放器初始化
+            self._attach().send("Page.bringToFront")
+        except ISmartError as exc:
+            self.last_error_code = ErrCode.CDP
+            logger.error("挂时长前打开任务失败: %s", exc)
+            return False
+
+        runner = self._runner()
+        try:
+            runner.keepalive_start()
+        except ISmartError as exc:
+            logger.warning("注入保持活跃脚本失败: %s", exc)
+
+        started = time.monotonic()
+        logger.info("开始挂时长：目标 %ss（任务 %s）", learning_time, scoid)
+        try:
+            while True:
+                elapsed = time.monotonic() - started
+                remaining = learning_time - elapsed
+                if remaining <= 0:
+                    break
+                wait_for = min(30.0, remaining)
+                if stop_event is not None:
+                    if stop_event.wait(wait_for):
+                        logger.info("挂时长被中断，已完成 %ds", int(elapsed))
+                        return False
+                else:
+                    time.sleep(wait_for)
+                logger.debug("挂时长进度 %ds/%ds", int(elapsed + wait_for), learning_time)
+        finally:
+            try:
+                runner.keepalive_stop()
+            except ISmartError as exc:
+                logger.debug("移除保持活跃脚本失败: %s", exc)
+        logger.info("挂时长完成：任务 %s 累计 %ds", scoid, int(time.monotonic() - started))
+        return True
 
     # ------------------------------------------------------------ 调试辅助
 
