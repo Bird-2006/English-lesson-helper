@@ -59,6 +59,11 @@ STARTUP_NOTICE = """使用声明：
 感谢您的理解与支持！"""
 
 CHANGELOG = [
+    ("V6.4.1", [
+        "修复「📡 抓接口」报 'bool' object has no attribute 'is_set'（stop_requested 是属性不是 Event）",
+        "课程列表不再把主讲显示成「进度」：主讲并入课程名（周三5-6节（徐辉 老师）），"
+        "进度列只在平台真给出进度时显示",
+    ]),
     ("V6.4.0", [
         "iSmart 取课程改为「接口优先」：用页面登录态调 client/course/list-of-student（自检里抓到的真实接口），"
         "失败才退回页面扫描，不再依赖卡片渲染时机",

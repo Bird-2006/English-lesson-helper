@@ -453,7 +453,10 @@ class AccountDetailDialog(QDialog):
         self.courses = courses
         self.courses_list.clear()
         for course in courses:
-            item = QListWidgetItem(f"{course['name']} (进度: {course['per']}%)")
+            # per 是「学习进度」，不是所有平台都给（iSmart 拿到的是主讲，不能当进度显示）
+            progress = str(course.get("per") or "").strip()
+            label = f"{course['name']} (进度: {progress}%)" if progress else str(course["name"])
+            item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, course)
             self.courses_list.addItem(item)
         self.log(f"✅ 获取到 {len(courses)} 门课程")

@@ -38,8 +38,9 @@ def test_courses_from_records_maps_fields():
     ]
     courses = ISmartClient._courses_from_records(records)
     assert [c["cid"] for c in courses] == ["12", "34"]
-    assert courses[0]["name"] == "周三5-6节"
-    assert courses[0]["per"] == "徐辉"
+    # 主讲并进名称；per 只表示学习进度，不能塞主讲
+    assert courses[0]["name"] == "周三5-6节（徐辉）"
+    assert courses[0]["per"] == ""
 
 
 # ---------------------------------------------------------------- 接口优先

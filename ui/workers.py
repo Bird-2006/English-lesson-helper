@@ -526,7 +526,7 @@ class LaunchClientThread(_BaseThread):
             self.result_ready.emit(False, "当前平台不支持抓接口")
             return
         try:
-            result = capture(self.seconds, should_stop=lambda: self.stop_requested.is_set())
+            result = capture(self.seconds, should_stop=lambda: self.stop_requested)
             requests_seen = result.get("requests") or []
             lines = [f"抓到 {len(requests_seen)} 个请求"]
             for item in requests_seen[:8]:

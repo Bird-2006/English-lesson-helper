@@ -6,7 +6,7 @@
 
 APP_NAME = "English Lesson Helper"
 APP_NAME_CN = "英语课程助手"
-APP_VERSION = "6.4.0"
+APP_VERSION = "6.4.1"
 APP_VERSION_TAG = f"V{APP_VERSION}"
 APP_TITLE = f"{APP_NAME} {APP_VERSION_TAG}"
 # 设置目录与 exe 文件属性使用的厂商字段

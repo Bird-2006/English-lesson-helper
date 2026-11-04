@@ -104,8 +104,9 @@ COURSES_JS = r"""
     const lines = title.split('\n').map((s) => s.trim()).filter(Boolean)
       .filter((s) => !isLabel(s) && !/^[¥￥]?\d+(\.\d+)?\s*元?$/.test(s) && !/查看详情/.test(s));
     const name = (lines[0] || ('课程 ' + (index + 1))).slice(0, 60);
-    const teacher = (lines.find((s) => /老师|教师|主讲/.test(s)) || '').slice(0, 40);
-    out.push({ cid: 'card:' + index, name: name, per: teacher });
+    const teacher = (lines.find((s) => /老师|教师|主讲/.test(s)) || '').replace(/^主讲[:：]?\s*/, '').slice(0, 20);
+    // per 表示「学习进度」，这里没有；主讲并进名称里更直观
+    out.push({ cid: 'card:' + index, name: teacher ? (name + '（' + teacher + '）') : name, per: '' });
   });
   return out.slice(0, 100);
 })()
@@ -952,9 +953,9 @@ class ISmartClient(PlatformClient):
                 continue
             name = _first(item, "courseName", "name", "title", "courseTitle") or f"课程 {cid}"
             teacher = _first(item, "teacherName", "teacher", "lecturer", "teacherRealName") or ""
-            courses.append(
-                {"cid": str(cid), "name": str(name)[:60], "per": str(teacher)[:40]}
-            )
+            label = f"{name}（{teacher}）" if teacher else str(name)
+            # per 留给「学习进度」：iSmart 的记录里没有，别把主讲塞进去
+            courses.append({"cid": str(cid), "name": label[:70], "per": ""})
         return courses
 
     # ------------------------------------------------------------ 接口调用

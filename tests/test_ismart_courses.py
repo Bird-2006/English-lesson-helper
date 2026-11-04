@@ -51,13 +51,16 @@ def _client(script, monkeypatch, tmp_path):
 def test_get_courses_records_list_url(monkeypatch, tmp_path):
     script = _Script(
         {
-            "const LABELS = ['进入课程'": [{"cid": "card:0", "name": "周三5-6节", "per": "主讲: 徐辉 老师"}],
+            "const LABELS = ['进入课程'": [
+                {"cid": "card:0", "name": "周三5-6节（徐辉 老师）", "per": ""}
+            ],
             LOCATION_KEY: "https://me.example.com/center/student/index.html?studentId=1",
         }
     )
     client = _client(script, monkeypatch, tmp_path)
     ok, courses, _ = client.get_courses()
     assert ok and courses[0]["cid"] == "card:0"
+    assert courses[0]["per"] == ""
     assert client._list_url.endswith("studentId=1")
 
 
