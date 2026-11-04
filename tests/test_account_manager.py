@@ -96,21 +96,42 @@ def test_load_broken_file_does_not_raise(tmp_path):
 def test_import_and_export_roundtrip(tmp_path):
     manager = _manager(tmp_path)
     source = tmp_path / "in.csv"
-    source.write_text("用户名,密码,昵称\nu1,p1,昵称1\nu2,p2,\n", encoding="utf-8")
+    source.write_text("用户名,密码,昵称,平台\nu1,p1,昵称1,\nu2,p2,,iSmart\n", encoding="utf-8")
     count, error = manager.import_from_file(str(source))
     assert (count, error) == (2, "")
+    assert manager.get_account("u1").platform == "welearn"
+    assert manager.get_account("u2").platform == "ismart"
 
     target = tmp_path / "out.csv"
     ok, error = manager.export_to_file(str(target))
     assert ok and error == ""
     content = target.read_text(encoding="utf-8-sig")
     assert "u1" in content and "p1" in content
+    assert "平台" in content and "ismart" in content
 
     ok, error = manager.export_to_file(str(tmp_path / "out.unknown"))
     assert ok is False and "不支持" in error
+
+
+def test_platform_defaults_and_normalization(tmp_path):
+    manager = _manager(tmp_path)
+    manager.add_account("a", "p")
+    assert manager.get_account("a").platform == "welearn"
+
+    manager.add_account("b", "p", "", "ismart")
+    assert manager.get_account("b").platform == "ismart"
+
+    assert AccountManager.normalize_platform("iSmart") == "ismart"
+    assert AccountManager.normalize_platform("WeLearn") == "welearn"
+    assert AccountManager.normalize_platform("") == "welearn"
+    assert AccountManager.normalize_platform(None) == "welearn"
+
+    reloaded = _manager(tmp_path)
+    assert reloaded.get_account("b").platform == "ismart"
 
 
 def test_account_from_dict_ignores_extra_keys():
     account = Account.from_dict({"username": "u", "password": "p", "extra": "x"})
     assert account.username == "u"
     assert account.uid == ""
+    assert account.platform == "welearn"

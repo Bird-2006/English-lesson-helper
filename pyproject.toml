@@ -1,17 +1,18 @@
 [project]
-name = "auto-welearn"
-version = "5.0.12"
-description = "WeLearn 学习助手：多账号作业/学习时长自动化桌面工具"
+name = "english-lesson-helper"
+version = "6.0.0"
+description = "English Lesson Helper：WeLearn / iSmart 双平台课程助手（PyQt5 桌面端）"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
     "PyQt5>=5.15.11",
     "requests>=2.32.5",
     "openpyxl>=3.1.5",
+    "websocket-client>=1.7.0",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "ruff>=0.6"]
 
 [tool.uv]
 required-environments = [

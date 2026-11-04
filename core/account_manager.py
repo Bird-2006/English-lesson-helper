@@ -35,6 +35,8 @@ class Account:
     progress: str = ""
     # WeLearn 数字用户 ID，登录并加载单元后回填，供「继续未完成任务」精确匹配
     uid: str = ""
+    # 所属平台 key（见 core.platforms），默认 WeLearn；iSmart 以本地客户端登录态为准
+    platform: str = "welearn"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -76,16 +78,16 @@ class AccountManager:
 
     # ---------------------------------------------------------------- 增删改
 
-    def add_account(self, username: str, password: str, nickname: str = "") -> bool:
+    def add_account(self, username: str, password: str, nickname: str = "", platform: str = "welearn") -> bool:
         if not username:
             return False
         if any(acc.username == username for acc in self.accounts):
             logger.warning("账号已存在: %s", username)
             return False
-        self.accounts.append(Account(username, password, nickname))
+        self.accounts.append(Account(username, password, nickname, platform=platform or "welearn"))
         self._locked_accounts.discard(username)
         self.save_accounts()
-        logger.info("已添加账号: %s", username)
+        logger.info("已添加账号: %s（平台: %s）", username, platform or "welearn")
         return True
 
     def remove_account(self, username: str) -> bool:
@@ -219,6 +221,20 @@ class AccountManager:
     USERNAME_HEADERS: ClassVar[set] = {"用户名", "账号", "username", "user", "account"}
     PASSWORD_HEADERS: ClassVar[set] = {"密码", "口令", "password", "pwd", "pass"}
 
+    PLATFORM_HEADERS: ClassVar[set] = {"平台", "platform", "site"}
+
+    @classmethod
+    def normalize_platform(cls, value) -> str:
+        """把「平台」列的内容归一成 key（认中文名/英文 key/含关键字的写法）。"""
+        text = str(value or "").strip().lower()
+        if not text:
+            return "welearn"
+        if "ismart" in text or "i-smart" in text:
+            return "ismart"
+        if "welearn" in text or "we learn" in text:
+            return "welearn"
+        return "welearn"
+
     @classmethod
     def _looks_like_header(cls, row) -> bool:
         """识别表头行，避免把「用户名,密码」当成一个账号导进去。"""
@@ -229,7 +245,7 @@ class AccountManager:
         return first in cls.USERNAME_HEADERS and second in cls.PASSWORD_HEADERS
 
     def import_from_file(self, filepath: str) -> Tuple[int, str]:
-        """从 CSV/TXT 导入账号（用户名,密码[,昵称]），自动跳过表头行。"""
+        """从 CSV/TXT 导入账号（用户名,密码[,昵称][,平台]），自动跳过表头行。"""
         try:
             imported = 0
             if filepath.lower().endswith(".csv"):
@@ -260,9 +276,10 @@ class AccountManager:
         username = str(row[0]).strip()
         password = str(row[1]).strip()
         nickname = str(row[2]).strip() if len(row) > 2 else ""
+        platform = self.normalize_platform(row[3]) if len(row) > 3 else "welearn"
         if not username or not password:
             return 0
-        return 1 if self.add_account(username, password, nickname) else 0
+        return 1 if self.add_account(username, password, nickname, platform) else 0
 
     def export_to_file(self, filepath: str) -> Tuple[bool, str]:
         """导出账号到 CSV/TXT（明文，供用户自行备份）。"""
@@ -270,13 +287,13 @@ class AccountManager:
             if filepath.lower().endswith(".csv"):
                 with open(filepath, "w", encoding="utf-8-sig", newline="") as stream:
                     writer = csv.writer(stream)
-                    writer.writerow(["用户名", "密码", "昵称"])
+                    writer.writerow(["用户名", "密码", "昵称", "平台"])
                     for acc in self.accounts:
-                        writer.writerow([acc.username, acc.password, acc.nickname])
+                        writer.writerow([acc.username, acc.password, acc.nickname, acc.platform])
             elif filepath.lower().endswith(".txt"):
                 with open(filepath, "w", encoding="utf-8") as stream:
                     for acc in self.accounts:
-                        stream.write(f"{acc.username},{acc.password},{acc.nickname}\n")
+                        stream.write(f"{acc.username},{acc.password},{acc.nickname},{acc.platform}\n")
             else:
                 return False, "不支持的文件格式，请使用 .csv 或 .txt"
             return True, ""

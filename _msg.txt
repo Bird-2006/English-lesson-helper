@@ -1,0 +1,29 @@
+feat: 合并 WeLearn 与 iSmart 双平台，更名为 English Lesson Helper
+
+平台抽象层
+- 新增 core/platforms：base.py 定义 PlatformClient 契约与 Capability 能力位，
+  __init__.py 提供注册表（create_client / name_from_key / supports）
+- core/api.py 降为兼容转发层，旧的 from core.api import WeLearnClient 仍可用
+- WeLearn 实现迁到 core/platforms/welearn.py，行为不变
+
+iSmart 适配器（CDP 驱动）
+- 新增 core/platforms/ismart.py：发现 9222 调试端口 → 附着页面 → 执行页面脚本
+- 默认 courses_js / units_js / tasks_js 为启发式 DOM 扫描，可在 ismart_profile.json 覆盖
+- 提交流程为可配置步骤引擎（click_task / click_text / wait_ms / eval / expect_ok）
+- dump_page() 导出 HTML+截图，用于现场校准选择器
+- 明确不支持刷时长（需 ut 签名直连接口），返回 unsupported 而非假装成功
+
+账号与任务
+- Account 新增 platform 字段；添加/表格/Excel 导入导出/CSV 全部带平台
+- task_progress 记录 platform，续跑按 uid + platform 匹配
+- 详情窗按平台能力渲染：iSmart 无「刷时长」模式、无自动衔接，新增「抓取页面结构」按钮
+
+更名与打包
+- 应用更名 English Lesson Helper V6.0.0，窗口标题、设置目录、版本资源同步
+- spec 更名 EnglishLessonHelper.spec，产物 EnglishLessonHelper.exe，版本 6.0.0.0
+- 依赖新增 websocket-client；hiddenimports 补 websocket
+
+测试
+- 新增 tests/test_platforms.py（注册表、契约、无客户端失败路径、配置读写、
+  步骤引擎成功/失败/未知步骤、dump_page、兼容层）
+- 现有用例随平台列与签名调整，共 75 个用例全绿；ruff 无告警

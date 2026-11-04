@@ -1,19 +1,22 @@
 """账号管理视图：账号表格、增删、Excel 批量导入、导出。
 
-改动要点：
+合并版改动：账号多了「平台」维度（WeLearn / iSmart），添加、导入、导出、
+表格都带上；其余逻辑（原地更新状态、openpyxl 读表、导出按钮）沿用。
+
+另外修复的历史问题：
 
 - 顶层 ``import pandas`` 只为了读一个 Excel，却把 50MB 级依赖带进启动
   路径，缺包直接 ``ImportError`` 起不来 → 改用 ``openpyxl`` 直读；
-- ``export_accounts()`` 原来定义了却从没接到按钮上（死代码），现在补上
-  「导出」按钮；
-- ``update_account_status`` 原来每次都「整份读 JSON + 整表重建」，而它被
-  进度回调高频调用 → 改为原地更新单元格，只有显式刷新/增删才整表重建。
+- ``export_accounts()`` 原来定义了却从没接到按钮上（死代码），现在有「导出」按钮；
+- ``update_account_status`` 原来每次整份读 JSON + 整表重建，而它被进度回调
+  高频调用 → 改为原地更新单元格。
 """
 from typing import Dict, Tuple
 
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
     QDialog,
     QFileDialog,
     QFrame,
@@ -31,11 +34,13 @@ from PyQt5.QtWidgets import (
 from core.account_manager import Account, AccountManager
 from core.constants import AccountStatus
 from core.logger import get_logger
+from core.platforms import PLATFORMS, name_from_key
 from ui.helpers import apply_background, message, no_help
 
 logger = get_logger("AccountView")
 
-COLUMNS = ["用户名", "昵称", "状态", "目标课程", "进度", "操作"]
+COLUMNS = ["用户名", "昵称", "平台", "状态", "目标课程", "进度", "操作"]
+COL_USERNAME, COL_NICKNAME, COL_PLATFORM, COL_STATUS, COL_TARGET, COL_PROGRESS, COL_ACTION = range(7)
 
 STATUS_COLORS = {
     AccountStatus.RUNNING: Qt.GlobalColor.blue,
@@ -46,19 +51,26 @@ STATUS_COLORS = {
 
 
 class AddAccountDialog(QDialog):
-    """添加账号对话框。"""
+    """添加账号对话框（含平台选择）。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("添加账号")
         self.setModal(True)
-        self.setMinimumWidth(300)
+        self.setMinimumWidth(340)
         no_help(self)
         self.init_ui()
         apply_background(self)
 
     def init_ui(self):
         layout = QVBoxLayout(self)
+
+        layout.addWidget(QLabel("平台:"))
+        self.platform_combo = QComboBox()
+        for info in PLATFORMS:
+            self.platform_combo.addItem(info.name, info.key)
+        self.platform_combo.setToolTip("iSmart 以本地客户端登录态为准，口令仅作记录")
+        layout.addWidget(self.platform_combo)
 
         layout.addWidget(QLabel("用户名:"))
         self.username_input = QLineEdit()
@@ -85,11 +97,12 @@ class AddAccountDialog(QDialog):
         buttons.addWidget(cancel_btn)
         layout.addLayout(buttons)
 
-    def get_values(self) -> Tuple[str, str, str]:
+    def get_values(self) -> Tuple[str, str, str, str]:
         return (
             self.username_input.text().strip(),
             self.password_input.text().strip(),
             self.nickname_input.text().strip(),
+            self.platform_combo.currentData() or "welearn",
         )
 
     def resizeEvent(self, event):
@@ -147,9 +160,10 @@ class AccountView(QWidget):
         header = self.account_table.horizontalHeader()
         for column in range(len(COLUMNS)):
             header.setSectionResizeMode(column, header.ResizeMode.Interactive)
-        header.setDefaultSectionSize(100)
-        header.resizeSection(0, 150)
-        header.resizeSection(3, 180)
+        header.setDefaultSectionSize(90)
+        header.resizeSection(COL_USERNAME, 150)
+        header.resizeSection(COL_PLATFORM, 110)
+        header.resizeSection(COL_TARGET, 170)
         header.setStretchLastSection(True)
 
         self.account_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -185,7 +199,7 @@ class AccountView(QWidget):
         dialog = AddAccountDialog(self)
         if dialog.exec_() != QDialog.DialogCode.Accepted:
             return
-        username, password, nickname = dialog.get_values()
+        username, password, nickname, platform = dialog.get_values()
         if not username or not password:
             message(self, "警告", "用户名和密码不能为空")
             return
@@ -193,12 +207,14 @@ class AccountView(QWidget):
         existing = self.account_manager.get_account(username)
         if existing:
             self.highlight_account(username)
-            nickname_text = f"（昵称: {existing.nickname}）" if existing.nickname else ""
             box = QMessageBox(self)
             no_help(box)
             box.setWindowTitle("重复账号")
             box.setIcon(QMessageBox.Warning)
-            box.setText(f"用户名 '{username}' 已存在 {nickname_text}\n\n是否要用新密码覆盖现有账号？")
+            box.setText(
+                f"用户名 '{username}' 已存在（平台: {name_from_key(existing.platform)}）\n\n"
+                "是否要用新密码覆盖现有账号？"
+            )
             box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
             box.setDefaultButton(QMessageBox.StandardButton.No)
             if box.exec_() == QMessageBox.StandardButton.Yes:
@@ -209,7 +225,7 @@ class AccountView(QWidget):
                 message(self, "成功", "账号信息已更新", QMessageBox.Information)
             return
 
-        if self.account_manager.add_account(username, password, nickname):
+        if self.account_manager.add_account(username, password, nickname, platform):
             self.refresh_table()
             message(self, "成功", "账号添加成功", QMessageBox.Information)
         else:
@@ -229,7 +245,7 @@ class AccountView(QWidget):
         if box.exec_() != QMessageBox.StandardButton.Yes:
             return
         for index in sorted(rows, reverse=True):
-            item = self.account_table.item(index.row(), 0)
+            item = self.account_table.item(index.row(), COL_USERNAME)
             if item:
                 self.account_manager.remove_account(item.text())
         self.refresh_table()
@@ -239,7 +255,7 @@ class AccountView(QWidget):
         if row is None:
             return
         self.account_table.selectRow(row)
-        item = self.account_table.item(row, 0)
+        item = self.account_table.item(row, COL_USERNAME)
         if item:
             self.account_table.scrollToItem(item)
 
@@ -252,8 +268,9 @@ class AccountView(QWidget):
             "请选择Excel文件进行批量导入\n\n"
             "Excel文件格式要求：\n"
             "• 必须包含\"用户名\"和\"密码\"列\n"
-            "• 可选包含\"昵称\"列\n"
-            "• 支持中英文列名（用户名/username，密码/password，昵称/nickname）",
+            "• 可选\"昵称\"列\n"
+            "• 可选\"平台\"列，填 ismart 即导入到 iSmart，留空默认 WeLearn\n"
+            "• 支持中英文列名（用户名/username，密码/password，昵称/nickname，平台/platform）",
             QMessageBox.Information,
         )
         filepath, _ = QFileDialog.getOpenFileName(
@@ -289,6 +306,7 @@ class AccountView(QWidget):
                 if username_col is None or password_col is None:
                     return 0, "Excel文件中缺少必要的列: 用户名/密码（或 username/password）"
                 nickname_col = self._pick_column(names, "昵称", "nickname")
+                platform_col = self._pick_column(names, "平台", "platform")
 
                 count = 0
                 for row in rows:
@@ -299,8 +317,15 @@ class AccountView(QWidget):
                     nickname = ""
                     if nickname_col is not None and len(row) > nickname_col and row[nickname_col] is not None:
                         nickname = str(row[nickname_col]).strip()
+                    platform = "welearn"
+                    if platform_col is not None and len(row) > platform_col and row[platform_col] is not None:
+                        platform = self.account_manager.normalize_platform(row[platform_col])
                     if username and password:
-                        count += 1 if self.account_manager.add_account(username, password, nickname) else 0
+                        count += (
+                            1
+                            if self.account_manager.add_account(username, password, nickname, platform)
+                            else 0
+                        )
                 return count, ""
             finally:
                 workbook.close()
@@ -341,17 +366,18 @@ class AccountView(QWidget):
         running = 0
         for row, acc in enumerate(accounts):
             self._row_by_username[acc.username] = row
-            self.account_table.setItem(row, 0, QTableWidgetItem(acc.username))
-            self.account_table.setItem(row, 1, QTableWidgetItem(acc.nickname or "-"))
-            self.account_table.setItem(row, 2, self._status_item(acc.status))
+            self.account_table.setItem(row, COL_USERNAME, QTableWidgetItem(acc.username))
+            self.account_table.setItem(row, COL_NICKNAME, QTableWidgetItem(acc.nickname or "-"))
+            self.account_table.setItem(row, COL_PLATFORM, QTableWidgetItem(name_from_key(acc.platform)))
+            self.account_table.setItem(row, COL_STATUS, self._status_item(acc.status))
             target = getattr(acc, "target_course_name", None) or "自动"
-            self.account_table.setItem(row, 3, QTableWidgetItem(target))
-            self.account_table.setItem(row, 4, QTableWidgetItem(acc.progress or "-"))
+            self.account_table.setItem(row, COL_TARGET, QTableWidgetItem(target))
+            self.account_table.setItem(row, COL_PROGRESS, QTableWidgetItem(acc.progress or "-"))
 
             manage_btn = QPushButton("管理")
             manage_btn.setProperty("username", acc.username)
             manage_btn.clicked.connect(self.on_manage_clicked)
-            self.account_table.setCellWidget(row, 5, manage_btn)
+            self.account_table.setCellWidget(row, COL_ACTION, manage_btn)
 
             if acc.status == AccountStatus.RUNNING:
                 running += 1
@@ -374,8 +400,8 @@ class AccountView(QWidget):
         row = self._row_by_username.get(username)
         if row is None:
             return
-        self.account_table.setItem(row, 2, self._status_item(status))
-        self.account_table.setItem(row, 4, QTableWidgetItem(progress or "-"))
+        self.account_table.setItem(row, COL_STATUS, self._status_item(status))
+        self.account_table.setItem(row, COL_PROGRESS, QTableWidgetItem(progress or "-"))
 
     # ------------------------------------------------------------ 打开详情
 
@@ -388,7 +414,7 @@ class AccountView(QWidget):
             self.open_detail_requested.emit(account)
 
     def open_detail(self, item):
-        username_item = self.account_table.item(item.row(), 0)
+        username_item = self.account_table.item(item.row(), COL_USERNAME)
         if not username_item:
             return
         account = self.account_manager.get_account(username_item.text())

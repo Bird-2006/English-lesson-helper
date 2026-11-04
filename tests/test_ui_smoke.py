@@ -104,11 +104,12 @@ def test_account_view_builds_and_lists_accounts(app, monkeypatch, manager):
     monkeypatch.setattr(account_view, "AccountManager", lambda *a, **k: manager)
     view = account_view.AccountView()
     assert view.account_table.rowCount() == 1
-    assert view.account_table.item(0, 0).text() == "tester"
+    assert view.account_table.item(0, account_view.COL_USERNAME).text() == "tester"
+    assert view.account_table.item(0, account_view.COL_PLATFORM).text().startswith("WeLearn")
 
     view.update_account_status("tester", "运行中", "进度 50%", persist=False)
-    assert view.account_table.item(0, 2).text() == "运行中"
-    assert view.account_table.item(0, 4).text() == "进度 50%"
+    assert view.account_table.item(0, account_view.COL_STATUS).text() == "运行中"
+    assert view.account_table.item(0, account_view.COL_PROGRESS).text() == "进度 50%"
 
 
 def test_excel_import_rejects_unsupported_suffix(app, monkeypatch, manager, tmp_path):
@@ -133,25 +134,50 @@ def test_excel_import_reads_accounts(app, monkeypatch, manager, tmp_path):
 
     workbook = Workbook()
     sheet = workbook.active
-    sheet.append(["用户名", "密码", "昵称"])
-    sheet.append(["excel_user", "excel_pass", "表格号"])
+    sheet.append(["用户名", "密码", "昵称", "平台"])
+    sheet.append(["excel_user", "excel_pass", "表格号", "welearn"])
+    sheet.append(["ismart_user", "ismart_pass", "智能号", "iSmart"])
     path = tmp_path / "accounts.xlsx"
     workbook.save(path)
 
     count, error = view.import_from_excel(str(path))
-    assert (count, error) == (1, "")
+    assert (count, error) == (2, "")
     assert manager.get_account("excel_user").password == "excel_pass"
+    assert manager.get_account("ismart_user").platform == "ismart"
 
 
-def test_detail_dialog_builds_without_network(app, monkeypatch, manager):
+def test_detail_dialog_welearn_shows_both_modes(app, monkeypatch, manager):
     import ui.account_detail as account_detail
+    from core.constants import TaskType
 
     monkeypatch.setattr(account_detail.AccountDetailDialog, "do_login", lambda self: None)
     dialog = account_detail.AccountDetailDialog(manager.get_account("tester"))
     dialog.show()
     QApplication.processEvents()
     assert dialog.start_btn.isEnabled() is False
-    assert dialog.mode_combo.currentText() == "刷作业"
+    assert dialog.mode_combo.currentText() == TaskType.HOMEWORK
+    assert dialog.mode_combo.count() == 2
+    assert dialog.client.info.key == "welearn"
+    dialog.close()
+
+
+def test_detail_dialog_ismart_hides_duration_and_adds_dump(app, monkeypatch, tmp_path):
+    import ui.account_detail as account_detail
+    from core.account_manager import AccountManager
+    from core.constants import TaskType
+
+    manager = AccountManager(data_file=str(tmp_path / "accounts.json"))
+    manager.add_account("smart", "pass", "智能号", "ismart")
+    monkeypatch.setattr(account_detail.AccountDetailDialog, "do_login", lambda self: None)
+    dialog = account_detail.AccountDetailDialog(manager.get_account("smart"))
+    dialog.show()
+    QApplication.processEvents()
+
+    assert dialog.client.info.key == "ismart"
+    assert dialog.mode_combo.count() == 1
+    assert dialog.mode_combo.currentText() == TaskType.HOMEWORK
+    assert hasattr(dialog, "dump_btn")
+    assert "iSmart" in dialog.windowTitle()
     dialog.close()
 
 

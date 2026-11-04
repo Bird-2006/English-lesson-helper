@@ -1,6 +1,10 @@
 """账号详情对话框：单账号的登录、选课、选单元、刷作业 / 刷时长。
 
-修复与优化点：
+合并版改动：客户端不再硬编码 WeLearn，改为按账号所属平台从
+``core.platforms`` 创建；界面按平台能力（是否支持刷时长、是否 CDP 驱动）
+决定显示哪些控件。
+
+历次修复（保留说明）：
 
 - ``_auto_start_tick`` 里引用了未定义的 ``logger``（日志有实证：刷作业→刷时长
   自动衔接时每秒抛一次 ``NameError``，被全局 excepthook 转成弹窗），并且每
@@ -37,9 +41,10 @@ from PyQt5.QtWidgets import (
 )
 
 from core.account_manager import Account
-from core.api import WeLearnClient
 from core.constants import AccountStatus, ErrCode, ProgressEvent, TaskType
 from core.logger import get_logger
+from core.platforms import create_client, get_info
+from core.platforms.base import Capability
 from core.task_progress import TaskProgress
 from ui import workers
 from ui.helpers import apply_background, no_help
@@ -64,7 +69,9 @@ class AccountDetailDialog(QDialog):
     def __init__(self, account: Account, parent=None):
         super().__init__(parent)
         self.account = account
-        self.client = WeLearnClient()
+        self.platform_key = getattr(account, "platform", "welearn") or "welearn"
+        self.platform_info = get_info(self.platform_key)
+        self.client = create_client(self.platform_key)
 
         self.is_logged_in = False
         self.courses: List[Dict] = []
@@ -88,7 +95,9 @@ class AccountDetailDialog(QDialog):
         self._estimated_total_seconds = 0
 
         self.init_ui()
-        self.setWindowTitle(f"账号管理 - {account.nickname or account.username}")
+        self.setWindowTitle(
+            f"{self.platform_info.name} - {account.nickname or account.username}"
+        )
         self.setMinimumSize(700, 500)
         self.setWindowFlags(
             Qt.WindowType.Window
@@ -163,11 +172,25 @@ class AccountDetailDialog(QDialog):
         mode_row = QHBoxLayout()
         mode_row.addWidget(QLabel("模式:"))
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems([MODE_HOMEWORK, MODE_DURATION])
+        modes = [MODE_HOMEWORK]
+        if self.client.supports(Capability.DURATION):
+            modes.append(MODE_DURATION)
+        self.mode_combo.addItems(modes)
         self.mode_combo.currentTextChanged.connect(self.on_mode_changed)
         mode_row.addWidget(self.mode_combo)
+        if self.client.supports(Capability.CDP):
+            self.dump_btn = QPushButton("🧭 抓取页面结构")
+            self.dump_btn.setToolTip("导出当前客户端页面的 HTML 与截图，用于校准选择器")
+            self.dump_btn.clicked.connect(self.dump_page)
+            mode_row.addWidget(self.dump_btn)
         mode_row.addStretch()
         settings_layout.addLayout(mode_row)
+
+        self.platform_hint = QLabel("")
+        self.platform_hint.setWordWrap(True)
+        self.platform_hint.setStyleSheet("color: #666; font-size: 12px;")
+        settings_layout.addWidget(self.platform_hint)
+        self._update_platform_hint()
 
         # 刷作业参数
         self.homework_widget = QWidget()
@@ -477,11 +500,38 @@ class AccountDetailDialog(QDialog):
 
     # ================================================================ 模式切换
 
+    def _update_platform_hint(self) -> None:
+        """按平台能力给出提示文案。"""
+        hints = [self.platform_info.description]
+        if not self.client.supports(Capability.DURATION):
+            hints.append("该平台暂不支持刷时长（需要 ut 签名直连接口），只能刷作业。")
+        if self.client.supports(Capability.CDP):
+            hints.append(
+                "使用前请给 iSmart 客户端加启动参数 --remote-debugging-port=9222 并保持登录；"
+                "页面元素需要校准，可点「抓取页面结构」后修改 ismart_profile.json。"
+            )
+        self.platform_hint.setText(" ".join(h for h in hints if h))
+
     def on_mode_changed(self, mode: str):
         is_homework = mode == MODE_HOMEWORK
         self.homework_widget.setVisible(is_homework)
         self.time_widget.setVisible(not is_homework)
         self.start_btn.setText("▶️ 开始刷作业" if is_homework else "▶️ 开始刷时长")
+
+    def dump_page(self):
+        """导出当前客户端页面结构，便于校准 iSmart 选择器。"""
+        dumper = getattr(self.client, "dump_page", None)
+        if dumper is None:
+            self.log("当前平台不支持页面抓取")
+            return
+        try:
+            path = dumper(self.account.username)
+        except Exception as exc:
+            self.log(f"❌ 抓取页面失败: {exc}")
+            logger.error("抓取页面失败: %s", exc)
+            return
+        self.log(f"✅ 页面结构已导出: {path}")
+        QMessageBox.information(self, "已导出", f"页面已保存到：\n{path}")
 
     def on_time_unit_changed(self, unit: str):
         current = self.time_spin.value()
@@ -651,6 +701,7 @@ class AccountDetailDialog(QDialog):
             completed_units=[],
             completed_courses={},
             task_config=task_config,
+            platform=self.platform_key,
         )
         logger.info("任务进度已保存 - 任务ID: %s", self.current_task_id)
 
@@ -821,6 +872,9 @@ class AccountDetailDialog(QDialog):
 
     def _ask_auto_duration(self, summary: str) -> None:
         """刷作业完成后询问是否接着刷时长（默认 5 秒后自动开始）。"""
+        if not self.client.supports(Capability.DURATION):
+            self.log("当前平台不支持刷时长，已跳过自动衔接")
+            return
         box = QMessageBox(self)
         no_help(box)
         box.setWindowTitle("刷作业完成")
@@ -843,6 +897,9 @@ class AccountDetailDialog(QDialog):
         self.auto_start_time_study()
 
     def auto_start_time_study(self):
+        if not self.client.supports(Capability.DURATION):
+            self.log("当前平台不支持刷时长")
+            return
         logger.info("刷作业完成，自动切换到刷时长模式")
         self.mode_combo.setCurrentText(MODE_DURATION)
         self.time_spin.setValue(3)
@@ -874,7 +931,7 @@ class AccountDetailDialog(QDialog):
     # ================================================================ 任务续跑
 
     def check_incomplete_task(self):
-        task = self.task_progress.find_incomplete_by_uid(self.uid)
+        task = self.task_progress.find_incomplete_by_uid(self.uid, self.platform_key)
         if not task:
             return
         task_type = task.get("task_type", "未知")

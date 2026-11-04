@@ -81,9 +81,11 @@ class TaskProgress:
         completed_units: List[int],
         completed_courses: Dict[int, List[str]],
         task_config: Dict[str, Any],
+        platform: str = "welearn",
     ) -> bool:
         self.progress_data[task_id] = {
             "task_type": task_type,
+            "platform": platform or "welearn",
             "cid": cid,
             "uid": str(uid),
             "classid": str(classid),
@@ -144,14 +146,17 @@ class TaskProgress:
             )
         return incomplete
 
-    def find_incomplete_by_uid(self, uid: str) -> Optional[Dict]:
-        """按 WeLearn 数字 uid 找该账号的未完成任务。"""
+    def find_incomplete_by_uid(self, uid: str, platform: str = None) -> Optional[Dict]:
+        """按账号 uid 找未完成任务；给了 ``platform`` 时只在该平台里找。"""
         uid = str(uid or "")
         if not uid:
             return None
         for task in self.get_incomplete_tasks():
-            if str(task.get("uid", "")) == uid:
-                return task
+            if str(task.get("uid", "")) != uid:
+                continue
+            if platform and str(task.get("platform", "welearn")) != platform:
+                continue
+            return task
         return None
 
     def get_task_progress(self, task_id: str) -> Optional[Dict]:

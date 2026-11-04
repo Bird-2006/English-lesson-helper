@@ -1,29 +1,35 @@
-# WeLearn 学习助手 V5.0.12
+# English Lesson Helper
 
 > **免责声明**
 >
-> - 软件仅供学习参考使用，永久免费，禁止倒卖
+> - 软件仅供学习交流使用，永久免费，禁止倒卖
 > - 禁止用于任何代刷牟利行为
 > - 使用本软件产生的任何后果由使用者自行承担
 > - 请合理使用，遵守学校相关规定
 
-Windows 桌面工具，通过模拟浏览器会话直接调用 WeLearn（welearn.sflep.com）的 HTTP 接口，批量完成课程作业与学习时长。
+面向英语网课的双平台桌面助手：**WeLearn**（welearn.sflep.com）与 **iSmart**（外语智能学习平台）。
+一套界面、一套账号管理、一套任务进度，按账号选择平台即可。
 
-## 功能
+## 平台能力
 
-| 模块 | 说明 |
-| --- | --- |
-| 刷作业 | 把选中单元里未完成的课程批量标记为已完成，正确率可设固定值或区间随机 |
-| 刷时长 | 按单元设定总时长并平均分给该单元每门课，逐秒计时、每 60 秒发心跳，跨单元并发 |
-| 多账号 | 添加/删除/Excel 批量导入/导出，每个账号独立窗口与独立会话 |
-| 断点续跑 | 任务参数写入 `task_progress.json`，中断后可从主窗口或详情页恢复 |
-| 网络工具箱 | 诊断适配器/IP/DHCP/DNS/HOSTS/代理，支持一键修复（需管理员） |
+| 能力 | WeLearn | iSmart |
+| --- | --- | --- |
+| 登录方式 | 账号口令直连接口 | 复用本地客户端登录态（CDP 附着） |
+| 刷作业 | ✅ 批量提交学习记录，正确率可配 | ✅ 按脚本步骤操作页面完成任务 |
+| 刷时长 | ✅ 逐秒计时 + 每分钟心跳 | ❌ 需要 `ut` 签名直连接口，暂未实现 |
+| 断点续跑 | ✅ | ✅ |
+| 依赖 | 无（纯 HTTP） | iSmart 客户端 + 启动参数 `--remote-debugging-port=9222` |
+
+> **iSmart 说明**：该平台上报分数要带 native 生成的 `ut` 签名，纯 Python 拿不到。
+> 本项目不发明接口，而是用 Chrome DevTools Protocol 驱动官方客户端页面（签名由客户端自己算）。
+> 客户端各版本 DOM 不同，代码里的页面脚本是启发式默认值，**首次使用需要现场校准**
+> （详情窗里有「🧭 抓取页面结构」按钮，导出 HTML + 截图后改 `ismart_profile.json`）。
 
 ## 环境要求
 
-- Windows 10 / 11（依赖 `winreg`、`winsound`、`netsh`、`ipconfig`）
+- Windows 10 / 11（依赖 `winreg`、`winsound`、`netsh`、`ipconfig`、DPAPI）
 - Python 3.9 及以上（开发与测试使用 3.12）
-- 运行「网络工具箱」的修复动作需要管理员权限；打包产物已内置 `requireAdministrator` 清单
+- 「网络工具箱」的修复动作需要管理员权限；打包产物已内置 `requireAdministrator` 清单
 
 ## 安装与运行
 
@@ -38,46 +44,51 @@ python main.py
 ## 测试与静态检查
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest          # 52 个用例，Qt 相关用例走 offscreen 后端
+.\.venv\Scripts\python.exe -m pytest          # 75 个用例，Qt 相关走 offscreen 后端
 .\.venv\Scripts\python.exe -m ruff check .    # 规则集见 pyproject.toml
 ```
 
 ## 打包
 
 ```powershell
-pyinstaller "WeLearn学习助手V5.0.12.spec"
-# 产物：dist\WeLearn学习助手V5.0.12\WeLearn学习助手V5.0.12.exe
+pyinstaller EnglishLessonHelper.spec
+# 产物：dist\EnglishLessonHelper\EnglishLessonHelper.exe
 ```
 
-`.spec` 只打包 `style.qss`；**不会**打包 `accounts.json` 等本机私有数据。
-如需窗口图标与背景图，在仓库根放 `app.ico` / `app_bg.png`，再把它们加回 `.spec` 的 `datas` 即可（代码里已按这两个文件名查找，缺失时自动退回系统默认样式）。
+`.spec` 只打包 `style.qss`，**不会**打包 `accounts.json`、`task_progress.json` 等本机数据。
+需要窗口图标与背景图时，在仓库根放 `app.ico` / `app_bg.png`，再把它们加回 `.spec` 的 `datas`。
 
 ## 项目结构
 
 ```
 main.py                     入口：全局异常钩子 + 拉起主窗口 + 退出前刷日志
-conftest.py                 pytest 配置（sys.path / Qt offscreen 后端）
+conftest.py                 pytest 配置（sys.path / Qt offscreen）
 core/
-  version.py                版本号唯一来源
+  version.py                版本与产品标识唯一来源
   paths.py                  源码运行 / PyInstaller 打包的资源与数据路径解析
-  constants.py              进度事件、账号状态、任务类型、错误码常量
-  logger.py                 日志（WeLearnV4 命名空间 + 轮转文件）
-  atomic.py                 原子文件写入（临时文件 + fsync + os.replace）
-  secure_store.py           账号口令的 Windows DPAPI 加密存储
-  crypto.py                 登录口令编码（base64("T1*hex")）
-  api.py                    WeLearn 接口封装（登录/课程/单元/SCO/挂时长）
-  account_manager.py        账号 CRUD、导入导出、持久化
-  task_progress.py          断点续跑的任务进度存储
+  constants.py              进度事件、账号状态、任务类型、错误码
+  logger.py                 WeLearnV4 命名空间 + 轮转日志
+  atomic.py                 原子文件写入
+  secure_store.py           账号口令的 Windows DPAPI 加密
+  crypto.py                 WeLearn 登录口令编码
+  account_manager.py        账号 CRUD / 导入导出 / 持久化（含平台字段）
+  task_progress.py          断点续跑的任务进度存储（按平台区分）
   network_fixer.py          网络诊断与修复
+  api.py                    兼容层：转出 core.platforms.welearn
+  platforms/
+    base.py                 平台接口 PlatformClient + 能力标记
+    __init__.py             平台注册表（welearn / ismart）
+    welearn.py              WeLearn 适配器（HTTP 直连）
+    ismart.py               iSmart 适配器（CDP 驱动 + 可配置脚本）
 ui/
-  helpers.py                消息框、图标、背景图缓存
-  main_window.py            主窗口、托盘、启动弹窗、退出流程
-  account_view.py           账号表格与导入导出
-  account_detail.py         单账号控制台（登录→选课→选单元→跑任务）
+  helpers.py                消息框工厂、图标、背景图缓存
+  main_window.py            主窗口、托盘、启动声明、退出流程
+  account_view.py           账号表格（含平台列）、增删、Excel 导入导出
+  account_detail.py         单账号控制台，按平台能力渲染控件
   workers.py                后台线程（登录/课程/单元/刷作业/刷时长）
-  network_fix_dialog.py     网络工具箱对话框
-style.qss                   全局样式表（可选的 app.ico / app_bg.png 放仓库根即可生效）
-tests/                      单元测试 + 无界面冒烟测试
+  network_fix_dialog.py     网络工具箱
+tests/                      单元测试 + offscreen 冒烟测试
+style.qss                   全局样式表
 version_info.txt            exe 版本资源（由 .spec 引用）
 ```
 
@@ -85,28 +96,38 @@ version_info.txt            exe 版本资源（由 .spec 引用）
 
 | 文件 | 位置 | 说明 |
 | --- | --- | --- |
-| `accounts.json` | 源码运行=项目根；打包=exe 同目录 | 账号列表，口令用当前 Windows 用户的 DPAPI 加密后保存 |
-| `task_progress.json` | 同上 | 未完成任务参数，用于断点续跑 |
-| `logs/WeLearnV4_YYYY-MM-DD.log` | 同上 | 运行日志，单文件 5MB 轮转，保留 5 份 |
-| `settings.ini` | `%LOCALAPPDATA%\WeLearnHelper\WeLearn学习助手\` | 安装 ID、公告「不再提醒」等界面设置 |
-
-以上两个 JSON 已加入 `.gitignore`，请勿提交或随包分发。
+| `accounts.json` | 源码=项目根；打包=exe 同目录 | 账号列表，口令 DPAPI 加密，带 `platform` 字段 |
+| `task_progress.json` | 同上 | 未完成任务参数，按 `uid + platform` 匹配续跑 |
+| `ismart_profile.json` | 同上 | iSmart 页面脚本与提交流程，首次运行自动生成，可手工调整 |
+| `dumps/` | 同上 | 「抓取页面结构」导出的 HTML / 截图 |
+| `logs/WeLearnV4_YYYY-MM-DD.log` | 同上 | 运行日志，5MB 轮转保留 5 份 |
+| `settings.ini` | `%LOCALAPPDATA%\EnglishLessonHelper\English Lesson Helper\` | 安装 ID、公告「不再提醒」等 |
 
 ## 使用流程
 
-1. **添加账号**：主界面「➕ 添加账号」，或用「📥 批量导入」选择 Excel（需含 `用户名`/`密码` 列，可选 `昵称`）。
-2. **进入详情**：双击账号行，窗口自动登录并拉取课程列表。
-3. **选课程 → 选单元**：单元默认全选，可单独勾选。
-4. **选模式**：
-   - 刷作业：设正确率、并发数；
-   - 刷时长：设每单元时长（小时/分钟）、随机扰动、并发数。
-5. **开始**：底部显示倒计时与进度，刷作业完成后会提示是否接着刷时长（5 秒后自动开始）。
-6. **中断与恢复**：停止或关窗不会丢参数，下次进详情会提示继续未完成任务。
+### 通用
 
-> 并发数不是越大越好：每门课都要占用一个线程等到时长跑完，并发过高只会加剧上游限流与内存占用，默认 8 左右足够。
+1. 「➕ 添加账号」→ 选平台 → 填账号口令（iSmart 可随便填，实际以客户端登录态为准）。
+2. 双击账号行进入详情窗 → 自动登录（iSmart 是附着客户端页面）。
+3. 选课程 → 勾选单元 → 选模式与参数 → 开始。
+
+### iSmart 首次使用
+
+1. 找到 iSmart 客户端快捷方式 → 右键属性 → 目标末尾追加
+   ` --remote-debugging-port=9222` → 用这个快捷方式启动客户端并完成登录。
+2. 在客户端里打开到课程/任务列表页。
+3. 回到本工具，详情窗点「🔐 登录」→ 应提示「已连接 iSmart 客户端」。
+4. 点「🧭 抓取页面结构」，在 `dumps/` 里对照 HTML 调整 `ismart_profile.json` 中的
+   `courses_js` / `units_js` / `tasks_js` / `submit_steps`。
+5. 再「刷新课程」，能列出课程即可开始刷作业。
+
+> 默认提交流程是「点任务 → 等 1.2s → 点『提交』 → 等 1.5s → 校验成功标志」。
+> 不同版本客户端按钮文案可能不同，改 `submit_steps` 里的 `text` 即可。
 
 ## 常见问题
 
-- **提示「本机无法解密该账号口令」**：`accounts.json` 被拷到了别的机器/用户下，DPAPI 密文解不开。重新添加账号输入密码即可。
-- **网络修复提示需要管理员权限**：右键 exe 选择「以管理员身份运行」，或用打包产物自带的提权清单启动。
-- **想看详细日志**：`logs/` 下按日期命名的文件，含每个线程的处理细节。
+- **提示「本机无法解密该账号口令」**：`accounts.json` 被拷到别的机器/用户，DPAPI 解不开，重新添加账号即可。
+- **iSmart 提示无法连接 9222**：客户端没用带参数的快捷方式启动，或已退出；重启客户端后重试。
+- **iSmart 抓不到课程/任务**：页面没停在对应列表页，或选择器不适配当前版本 —— 抓页面结构后改配置。
+- **刷时长按钮不见了**：iSmart 不支持刷时长，界面会按平台能力自动隐藏。
+- **想看详细日志**：`logs/` 下按日期命名的文件。

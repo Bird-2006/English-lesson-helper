@@ -27,6 +27,8 @@ env/
 accounts.json
 accounts.txt
 task_progress.json
+ismart_profile.json
+dumps/
 logs/
 *.log
 

@@ -38,7 +38,7 @@ from core.logger import get_logger
 from core.logger import shutdown as shutdown_logging
 from core.paths import resource_path
 from core.task_progress import TaskProgress
-from core.version import APP_VENDOR, APP_VERSION_TAG
+from core.version import APP_NAME, APP_NAME_CN, APP_TITLE, APP_VENDOR, APP_VERSION_TAG
 from ui import account_detail, account_view
 from ui.helpers import app_icon, apply_background, no_help
 
@@ -49,7 +49,7 @@ RESIZE_DEBOUNCE_MS = 100
 
 STARTUP_NOTICE = """使用声明：
 
-本软件为WeLearn学习助手{version}版本。
+本软件为「{name}」（{name_cn}）{version} 版本，支持 WeLearn 与 iSmart 两个平台。
 
 使用条款：
 1. 本软件仅供学习交流使用，严禁用于任何商业用途
@@ -59,6 +59,14 @@ STARTUP_NOTICE = """使用声明：
 感谢您的理解与支持！"""
 
 CHANGELOG = [
+    ("V6.0.0", [
+        "项目更名 English Lesson Helper，合并 WeLearn 与 iSmart 两个平台",
+        "新增平台适配层 core/platforms，按账号所属平台创建客户端",
+        "账号新增「平台」维度：添加、表格、Excel 导入导出、断点续跑均按平台区分",
+        "新增 iSmart 适配器：通过 CDP 驱动本地客户端，可抓取页面结构辅助校准选择器",
+        "iSmart 暂不支持刷时长（需 ut 签名直连接口），界面按平台能力自动隐藏",
+        "账号口令改用 Windows DPAPI 加密存储",
+    ]),
     ("V5.0.12", [
         "添加网络诊断与修复工具箱",
         "文件夹模式打包，启动速度更快",
@@ -204,7 +212,7 @@ CHANGELOG = [
 
 def changelog_text() -> str:
     """把公告数据渲染成可读文本。"""
-    lines = [f"WeLearn学习助手 {APP_VERSION_TAG}", ""]
+    lines = [APP_TITLE, ""]
     for version, items in CHANGELOG:
         lines.append(version)
         lines.extend(f"- {item}" for item in items)
@@ -231,9 +239,7 @@ class WeLearnUI(QMainWindow):
     # ================================================================ 界面
 
     def init_ui(self):
-        self.setWindowTitle(
-            f"WeLearn学习助手 {APP_VERSION_TAG}    致力于把大学生的时间还给大学生"
-        )
+        self.setWindowTitle(f"{APP_TITLE}  |  {APP_NAME_CN}    多平台课程助手")
         self.setGeometry(100, 100, 900, 600)
         self.setMinimumSize(800, 500)
 
@@ -304,7 +310,7 @@ class WeLearnUI(QMainWindow):
     @staticmethod
     def _settings() -> QSettings:
         settings_dir = os.path.join(
-            os.path.expanduser("~"), "AppData", "Local", APP_VENDOR, "WeLearn学习助手"
+            os.path.expanduser("~"), "AppData", "Local", APP_VENDOR, APP_NAME
         )
         os.makedirs(settings_dir, exist_ok=True)
         return QSettings(os.path.join(settings_dir, "settings.ini"), QSettings.IniFormat)
@@ -349,7 +355,9 @@ class WeLearnUI(QMainWindow):
         layout = QVBoxLayout(dialog)
         text = QTextEdit()
         text.setReadOnly(True)
-        body = STARTUP_NOTICE.format(version=APP_VERSION_TAG)
+        body = STARTUP_NOTICE.format(
+            name=APP_NAME, name_cn=APP_NAME_CN, version=APP_VERSION_TAG
+        )
         if show_announcement:
             body += "\n\n" + "=" * 30 + "\n更新公告\n" + "=" * 30 + "\n\n" + changelog_text()
         text.setText(body)
