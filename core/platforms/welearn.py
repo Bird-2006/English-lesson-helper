@@ -102,6 +102,10 @@ class WeLearnClient(PlatformClient):
     def __init__(self):
         self.last_error_code = ""
         self._local = threading.local()
+        # 登录态（cookie）必须在所有线程间共享：登录在 LoginThread，
+        # 取课程在 CourseThread，取单元又在 UnitsThread —— 各线程 Session 独立，
+        # 但共用同一个 cookie jar。CookieJar 自身带锁，读写是线程安全的。
+        self._cookies = requests.cookies.RequestsCookieJar()
         self._header_template = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         }
@@ -110,11 +114,12 @@ class WeLearnClient(PlatformClient):
 
     @property
     def session(self) -> requests.Session:
-        """每线程一个 Session，避免并发线程互相覆盖 cookie。"""
+        """每线程一个 Session（连接池隔离），但共享同一个 cookie jar（登录态连续）。"""
         session = getattr(self._local, "session", None)
         if session is None:
             session = requests.Session()
             session.headers.update(self._header_template)
+            session.cookies = self._cookies
             self._local.session = session
         return session
 
@@ -126,6 +131,10 @@ class WeLearnClient(PlatformClient):
             except Exception:
                 pass
             self._local.session = None
+        try:
+            self._cookies.clear()
+        except Exception:
+            pass
 
     def _fail(self, code: str, message: str) -> Tuple[bool, str]:
         self.last_error_code = code

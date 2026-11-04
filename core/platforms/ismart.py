@@ -326,7 +326,9 @@ class ISmartClient(PlatformClient):
         try:
             self._attach()
         except ISmartError as exc:
-            self.last_error_code = ErrCode.NETWORK
+            # 用独立错误码，界面才会把「请加 --remote-debugging-port=9222」这条
+            # 可操作的原文显示出来，而不是笼统的「无法连接服务器」
+            self.last_error_code = ErrCode.CDP
             return False, str(exc)
         return True, "已连接 iSmart 客户端（登录态以客户端为准）"
 

@@ -4,7 +4,7 @@
 
 ## 项目概述
 
-**English Lesson Helper V6.0.1**（包名 `english-lesson-helper`）：Windows 桌面 GUI，把两个英语网课平台
+**English Lesson Helper V6.0.2**（包名 `english-lesson-helper`）：Windows 桌面 GUI，把两个英语网课平台
 收敛到同一套界面与任务流程：
 
 | 平台 | 适配器 | 接入方式 | 能力 |
@@ -23,7 +23,7 @@
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe main.py
 
-# 测试（77 个用例；Qt 相关走 offscreen，conftest.py 已配好插件路径）
+# 测试（79 个用例；Qt 相关走 offscreen，conftest.py 已配好插件路径）
 .\.venv\Scripts\python.exe -m pytest
 
 # 静态检查
@@ -76,7 +76,7 @@ ui/
   network_fix_dialog.py    网络工具箱
 tests/                     单元测试 + offscreen 冒烟
 style.qss                  全局样式表
-version_info.txt           exe 版本资源（6.0.1.0），由 .spec 的 version= 引用
+version_info.txt           exe 版本资源（6.0.2.0），由 .spec 的 version= 引用
 EnglishLessonHelper.spec   PyInstaller 打包脚本（onedir 文件夹版）
 EnglishLessonHelper-portable.spec  便携单文件打包脚本（onefile，uac_admin=False）
 ```
@@ -109,7 +109,13 @@ EnglishLessonHelper-portable.spec  便携单文件打包脚本（onefile，uac_a
 
 1. `login`：`GET /user/prelogin.aspx` → `parse_prelogin_url()` 取 `code_challenge`/`state`
    → `generate_cipher_text` → `POST sso.sflep.com/idsvr/account/login`（`code==1` 判密码错，不重试）
-   → 再 GET 一次 prelogin 收 cookie。会话是**线程局部**的（`threading.local`），并发不踩 cookie。
+   → 再 GET 一次 prelogin 收 cookie。
+
+   ⚠️ **线程与 cookie 的关系（踩过坑）**：程序里登录在 `LoginThread`、取课程在 `CourseThread`、
+   取单元在 `UnitsThread`，`session` 是**每线程一个 Session**（连接池隔离），但 `cookies` 必须是
+   **同一个 `RequestsCookieJar` 实例**（`session.cookies = self._cookies`），否则登录态跨线程丢失 →
+   取课程返回 HTML 登录页 → `Expecting value: line 1 column 1 (char 0)`。
+   回归测试：`tests/test_api.py::test_sessions_are_per_thread_but_share_cookie_jar`。
 
    ⚠️ **prelogin 的真实返回形态**（踩过坑，别再改回去）：它跳到
    `https://sso.sflep.com/idsvr/transfer.html?returnUrl=%2Fconnect%2Fauthorize%2Fcallback%3F...%26code_challenge%3DXXX%26...%26state%3DYYY`，
@@ -157,14 +163,15 @@ EnglishLessonHelper-portable.spec  便携单文件打包脚本（onefile，uac_a
 
 ## 测试与验证现状
 
-- `pytest`：77 用例全绿。含 `test_platforms.py`（注册表、契约、iSmart 无客户端时的失败路径、
+- `pytest`：79 用例全绿。含 `test_platforms.py`（注册表、契约、iSmart 无客户端时的失败路径、
   配置读写、步骤引擎成功/失败/未知步骤、dump_page、core.api 兼容层）。
 - `ruff check .`：0 问题（`E4/E7/E9/F/I/UP032/B006/B008/B904`，忽略 `E501`）。
 - offscreen 冒烟：主窗口构建、7 列表格渲染、WeLearn 账号显示、正常退出。
 - 打包实测（ASCII 路径下）：产物含 `style.qss`，不含 `accounts.json`，exe 版本资源生效。
-- 便携版实测：`dist\EnglishLessonHelper-portable.exe` 40.39MB；`VersionInfo` 为 6.0.1.0；
-  清单为 `asInvoker`（无 UAC）；双击后进程存活、在 **exe 同级** 生成 `logs/WeLearnV4_*.log`，
-  日志首行为 `English Lesson Helper V6.0.1 启动`。
+- 便携版实测：`dist\EnglishLessonHelper-portable.exe` 40.38MB；`VersionInfo` 为 6.0.2.0；
+  清单为 `asInvoker`（无 UAC）；双击后是 1 个 bootloader + 1 个应用进程，在 **exe 同级** 生成
+  `logs/WeLearnV4_*.log`，日志首行为 `English Lesson Helper V6.0.2 启动`。
+- 跨线程真实链路验证（三个独立线程）：登录成功 → 4 门课程 → uid=12086092/classid=788917/8 个单元 → 34 个 SCO。
 - 本机 `accounts.json` 口令为 DPAPI 密文。
 
 ## 修改约定

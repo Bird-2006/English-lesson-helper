@@ -88,7 +88,8 @@ def test_ismart_login_reports_missing_debug_port():
     assert ok is False
     assert "9222" not in message or "端口" in message
     assert "1" in message
-    assert client.last_error_code == "network"
+    # 独立错误码：界面会把这条可操作提示原样展示，而不是「无法连接服务器」
+    assert client.last_error_code == "cdp"
     client.close()
 
 

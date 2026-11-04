@@ -49,6 +49,7 @@ class ErrCode:
     AUTH = "auth"
     SERVER = "server"
     PARSE = "parse"
+    CDP = "cdp"
     UNSUPPORTED = "unsupported"
     UNKNOWN = "unknown"
 

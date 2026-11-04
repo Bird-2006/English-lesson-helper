@@ -59,6 +59,13 @@ STARTUP_NOTICE = """使用声明：
 感谢您的理解与支持！"""
 
 CHANGELOG = [
+    ("V6.0.2", [
+        "修复登录成功后取不到课程：登录在 LoginThread、取课程在 CourseThread，"
+        "线程局部 Session 把 cookie 也隔离了，现改为「每线程独立连接池 + 共享 cookie jar」",
+        "iSmart 未开调试端口时，提示改为原样展示「请加 --remote-debugging-port=9222」，不再显示「无法连接服务器」",
+        "修复账号详情窗关闭时清理执行两遍（重复写日志、重复关闭线程）",
+        "去掉样式表里 Qt 不支持的 transform 属性，消除满屏 Unknown property transform 告警",
+    ]),
     ("V6.0.1", [
         "修复登录失败：prelogin 实际跳转到 sso.sflep.com/idsvr/transfer.html，"
         "参数二次编码后嵌在 returnUrl 里，重构时的解析方式取不到 code_challenge/state",

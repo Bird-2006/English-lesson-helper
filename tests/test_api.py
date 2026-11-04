@@ -1,8 +1,66 @@
 import json
+import threading
 
 import pytest
 
 from core.api import WeLearnClient, classify_exception, parse_prelogin_url
+
+
+def test_sessions_are_per_thread_but_share_cookie_jar():
+    """回归：登录在 LoginThread、取课程在 CourseThread，cookie 必须跨线程连续。"""
+    client = WeLearnClient()
+    main_session = client.session
+    captured = {}
+
+    def worker():
+        captured["same_session"] = client.session is main_session
+        captured["same_jar"] = client.session.cookies is main_session.cookies
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join()
+
+    assert captured["same_session"] is False  # 连接池按线程隔离
+    assert captured["same_jar"] is True  # 但登录态共享
+
+
+def test_cookie_written_in_one_thread_is_visible_in_another():
+    import http.cookiejar
+
+    client = WeLearnClient()
+    cookie = http.cookiejar.Cookie(
+        version=0,
+        name="sco_token",
+        value="abc123",
+        port=None,
+        port_specified=False,
+        domain="welearn.sflep.com",
+        domain_specified=True,
+        domain_initial_dot=False,
+        path="/",
+        path_specified=True,
+        secure=True,
+        expires=None,
+        discard=False,
+        comment=None,
+        comment_url=None,
+        rest={},
+    )
+
+    visible = {}
+
+    def worker():
+        client.session.cookies.set_cookie(cookie)
+        visible["value"] = client.session.cookies.get("sco_token")
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join()
+
+    assert visible["value"] == "abc123"
+    assert client.session.cookies.get("sco_token") == "abc123"
+    client.close()
+    assert client.session.cookies.get("sco_token") is None  # close 后清空登录态
 
 
 def test_parse_prelogin_url_extracts_parameters():

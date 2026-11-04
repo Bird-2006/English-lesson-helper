@@ -79,6 +79,7 @@ class AccountDetailDialog(QDialog):
         self.current_units: List[Dict] = []
         self.uid = getattr(account, "uid", "") or ""
         self.classid = ""
+        self._closing = False
 
         self.login_thread = None
         self.course_thread = None
@@ -384,13 +385,15 @@ class AccountDetailDialog(QDialog):
 
         self.login_btn.setText("🔐 登录")
         hint = message
-        if self.client.last_error_code == ErrCode.TIMEOUT:
+        code = self.client.last_error_code
+        if code == ErrCode.TIMEOUT:
             hint = "网络超时，请检查网络连接后重试"
-        elif self.client.last_error_code == ErrCode.NETWORK:
+        elif code == ErrCode.NETWORK:
             hint = "无法连接服务器，请检查网络"
-        elif self.client.last_error_code == ErrCode.PARSE:
+        elif code == ErrCode.PARSE:
             hint = "服务器响应异常，请稍后重试"
-        elif self.client.last_error_code == ErrCode.AUTH:
+        elif code in (ErrCode.AUTH, ErrCode.CDP, ErrCode.UNSUPPORTED):
+            # 这几类是明确可操作的提示（密码错 / 未开调试端口 / 不支持），原样展示
             hint = message
         self.log(f"❌ 登录失败: {hint}")
         logger.error("登录失败 - 账号: %s, 错误: %s", self.account.username, message)
@@ -1006,6 +1009,13 @@ class AccountDetailDialog(QDialog):
     # ================================================================ 关闭
 
     def closeEvent(self, event):
+        # 主窗口关闭时会显式调一次 closeEvent(None) 再 close()，Qt 又会发一次事件；
+        # 用标记保证清理只做一遍（否则会重复关闭线程/客户端并重复写日志）。
+        if self._closing:
+            if event is not None:
+                event.accept()
+            return
+        self._closing = True
         thread = self.study_thread
         if thread is not None and thread.isRunning():
             box = QMessageBox(self)
