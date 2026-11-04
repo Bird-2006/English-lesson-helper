@@ -45,7 +45,7 @@ python main.py
 ## 测试与静态检查
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest          # 164 个用例，Qt 相关走 offscreen 后端
+.\.venv\Scripts\python.exe -m pytest          # 186 个用例，Qt 相关走 offscreen 后端
 .\.venv\Scripts\python.exe -m ruff check .    # 规则集见 pyproject.toml
 ```
 

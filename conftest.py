@@ -41,3 +41,14 @@ def _never_attach_to_real_browser(monkeypatch):
         raise ismart.ISmartError("测试环境禁用真实浏览器附着")
 
     monkeypatch.setattr(ismart.CDPSession, "attach_to_browser", staticmethod(_blocked), raising=False)
+
+    # 只读接口同理：测试里不允许向外网发请求（本机回环放行，供端口探测类用例使用）
+    real_get = ismart.requests.get
+
+    def _guarded_get(url, *args, **kwargs):
+        host = str(url).split("/")[2] if "://" in str(url) else ""
+        if host == "localhost" or host.startswith("127."):
+            return real_get(url, *args, **kwargs)
+        raise ConnectionError("测试环境禁用外网请求")
+
+    monkeypatch.setattr(ismart.requests, "get", _guarded_get, raising=False)

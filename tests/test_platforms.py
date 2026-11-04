@@ -221,9 +221,11 @@ def test_unknown_step_kind_is_rejected():
     assert counts[1] == 1
 
 
-def test_get_courses_normalizes_stub_output():
+def test_get_courses_normalizes_stub_output(monkeypatch):
     profile = ISmartProfile()
     client = _client_with_stub(profile, [[{"cid": "11", "name": "Book A", "per": ""}]])
+    # 现在 get_courses 会先尝试 JSON 接口；这里直接封掉取 Cookie，确保走 DOM 分支
+    monkeypatch.setattr(client, "cookies", lambda: {})
     ok, courses, message = client.get_courses()
     assert ok is True
     assert courses[0]["cid"] == "11"

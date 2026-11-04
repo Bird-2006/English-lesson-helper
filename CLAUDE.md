@@ -4,7 +4,7 @@
 
 ## 项目概述
 
-**English Lesson Helper V6.3.0**（包名 `english-lesson-helper`）：Windows 桌面 GUI，把两个英语网课平台
+**English Lesson Helper V6.4.0**（包名 `english-lesson-helper`）：Windows 桌面 GUI，把两个英语网课平台
 收敛到同一套界面与任务流程：
 
 | 平台 | 适配器 | 接入方式 | 能力 |
@@ -23,7 +23,7 @@
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe main.py
 
-# 测试（164 个用例；Qt 相关走 offscreen，conftest.py 已配好插件路径）
+# 测试（186 个用例；Qt 相关走 offscreen，conftest.py 已配好插件路径）
 .\.venv\Scripts\python.exe -m pytest
 
 # 静态检查
@@ -77,7 +77,7 @@ ui/
   network_fix_dialog.py    网络工具箱
 tests/                     单元测试 + offscreen 冒烟
 style.qss                  全局样式表
-version_info.txt           exe 版本资源（6.3.0.0），由 .spec 的 version= 引用
+version_info.txt           exe 版本资源（6.4.0.0），由 .spec 的 version= 引用
 EnglishLessonHelper.spec   PyInstaller 打包脚本（onedir 文件夹版）
 EnglishLessonHelper-portable.spec  便携单文件打包脚本（onefile，uac_admin=False）
 ```
@@ -194,6 +194,13 @@ EnglishLessonHelper-portable.spec  便携单文件打包脚本（onefile，uac_a
     cid 记为 `card:<序号>`（同页内稳定）。
 - 因为要验证码，正确姿势是**用户在浏览器窗口里登录一次**，会话存在
   `<数据目录>/browser-profile` 里，下次不用重登；工具只负责登录之后的页面操作。
+- **课程列表接口优先**：`get_courses()` 先用页面登录态（CDP `Network.getAllCookies`）调
+  `GET https://school.ismartlearning.cn/client/course/list-of-student?status=1&pager.pageSize=50`，
+  `extract_list()` 兼容 `data/list/rows/records/items` 等常见包法；失败才回退 DOM 扫描。
+  `api_get()` 只做只读 GET，POST 提交仍由页面完成（`ut` 签名在页面里）。
+- **抓接口**：`capture_network(seconds)` 走 `Network.enable` + `CDPSession.drain()`，
+  聚合 URL（同一 URL 计数）+ 保留 POST body，存 `dumps/api_*.json`；界面按钮「📡 抓接口」。
+  这是搞清任务/提交接口（以及 `ut` 长什么样）的唯一可靠入口。
 - **卡片级闭环**：`click_course("card:N")` 点开课程并等 URL 变化 →
   执行录制流程/默认提交步骤 → `return_to_list()` 用 `_list_url` 回到列表；
   页面没有单元/任务元素时 `get_course_info`/`get_sco_leaves` 退化为「整门课程」，不再中断。
@@ -211,9 +218,16 @@ EnglishLessonHelper-portable.spec  便携单文件打包脚本（onefile，uac_a
 `get_logger(name)` 返回 `WeLearnV4.<name>`，会写进同一天的日志文件（旧实现挂在 root 下，线程日志一条没落盘）。
 退出路径（`main.py`、`WeLearnUI._shutdown`）都会 `shutdown()` 刷盘；账号口令从不进日志。
 
+两个 Windows 特有的坑（都已处理，别再退回）：
+
+- **控制台编码**：cp936 终端遇到 emoji（🌐 ⏺）会抛 `UnicodeEncodeError`，logging 于是刷一屏
+  `--- Logging error ---`。`_safe_stream()` 会把 stderr `reconfigure(encoding="utf-8", errors="replace")`。
+- **轮转被占用**：源码版与便携版同时运行会占用同一个日志文件，`rename` 报 `WinError 32`。
+  `_SafeRotatingFileHandler.doRollover()` 捕获后跳过本次轮转，只打一行提示。
+
 ## 测试与验证现状
 
-- `pytest`：164 用例全绿。含 `test_platforms.py`（注册表、契约、iSmart 无客户端时的失败路径、
+- `pytest`：186 用例全绿。含 `test_platforms.py`（注册表、契约、iSmart 无客户端时的失败路径、
   配置读写、步骤引擎成功/失败/未知步骤、dump_page、core.api 兼容层）、`test_ismart_discovery.py`
   （CDP 端口探测、客户端/浏览器定位、带调试参数启动、超时、错误信息可读性、浏览器模式）、
   `test_ismart_session.py`（sessionId 注入、事件帧跳过、附着重试与放弃）、
@@ -227,9 +241,9 @@ EnglishLessonHelper-portable.spec  便携单文件打包脚本（onefile，uac_a
 - `ruff check .`：0 问题（`E4/E7/E9/F/I/UP032/B006/B008/B904`，忽略 `E501`）。
 - offscreen 冒烟：主窗口构建、7 列表格渲染、WeLearn 账号显示、正常退出。
 - 打包实测（ASCII 路径下）：产物含 `style.qss`，不含 `accounts.json`，exe 版本资源生效。
-- 便携版实测：`dist\EnglishLessonHelper-portable.exe` 40.41MB；`VersionInfo` 为 6.3.0.0；
+- 便携版实测：`dist\EnglishLessonHelper-portable.exe` 40.42MB；`VersionInfo` 为 6.4.0.0；
   清单为 `asInvoker`（无 UAC）；双击后是 1 个 bootloader + 1 个应用进程，在 **exe 同级** 生成
-  `logs/WeLearnV4_*.log`，日志首行为 `English Lesson Helper V6.3.0 启动`。
+  `logs/WeLearnV4_*.log`，日志首行为 `English Lesson Helper V6.4.0 启动`。
 - 学生中心闭环实测（仿页面 + Edge）：识别到 `[card:0 周三5-6节/主讲徐辉, card:1 周五7-8节]` →
   进课程 → 提交成功 → 自动回到 `/center`；挂时长 3 秒同样回到列表（`CENTER E2E OK`）。
 - 真实站点自检实测（Edge + `me.ismartlearning.cn/front/login.html`）：拿到 11 个输入框

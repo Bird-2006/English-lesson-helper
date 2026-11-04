@@ -59,6 +59,15 @@ STARTUP_NOTICE = """使用声明：
 感谢您的理解与支持！"""
 
 CHANGELOG = [
+    ("V6.4.0", [
+        "iSmart 取课程改为「接口优先」：用页面登录态调 client/course/list-of-student（自检里抓到的真实接口），"
+        "失败才退回页面扫描，不再依赖卡片渲染时机",
+        "新增「📡 抓接口」：抓一段时间的网络请求（含 POST body），存 dumps/api_*.json，"
+        "用来确认任务/提交接口，也是将来拿 ut 的入口",
+        "修日志：控制器 GBK 编码遇 emoji 会抛 UnicodeEncodeError 并刷 Logging error，现改为 UTF-8 + 替换字符",
+        "修日志轮转：两个实例同时跑时文件被占用会崩，现跳过本次轮转并只提示一行",
+        "iSmart 按钮文案识别补上 <input value> / title / aria-label（学生中心『进入课程』可能是这类元素）",
+    ]),
     ("V6.3.0", [
         "iSmart 课程识别适配学生中心：按「进入课程」按钮定位卡片，取标题与主讲，cid 记为 card:序号",
         "新增「进课程 → 执行 → 回列表」闭环：刷作业/刷时长可按课程卡片逐张跑，自动回到列表页",

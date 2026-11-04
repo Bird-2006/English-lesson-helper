@@ -485,23 +485,29 @@ class TimeStudyThread(_BaseThread):
 
 
 class LaunchClientThread(_BaseThread):
-    """启动本地客户端 / 浏览器（iSmart），耗时操作放后台避免卡界面。
+    """启动本地客户端 / 浏览器，或抓接口（iSmart），耗时操作放后台避免卡界面。
 
     ``mode``:
       - ``"client"``：定位并带调试端口启动桌面客户端；
-      - ``"browser"``：用本机 Edge/Chrome 带调试端口打开 ``url``。
+      - ``"browser"``：用本机 Edge/Chrome 带调试端口打开 ``url``；
+      - ``"capture"``：抓 ``seconds`` 秒网络请求，弄清业务接口。
     """
 
     result_ready = pyqtSignal(bool, str)
 
-    def __init__(self, client, port: int = None, mode: str = "client", url: str = None):
+    def __init__(self, client, port: int = None, mode: str = "client", url: str = None, seconds: float = 60.0):
         super().__init__()
         self.client = client
         self.port = port
         self.mode = mode
         self.url = url
+        self.seconds = seconds
 
     def run(self):
+        if self.mode == "capture":
+            self._run_capture()
+            return
+
         method_name = "open_in_browser" if self.mode == "browser" else "launch_and_connect"
         launcher = getattr(self.client, method_name, None)
         if launcher is None:
@@ -513,6 +519,24 @@ class LaunchClientThread(_BaseThread):
             self.logger.exception("启动失败（%s）", self.mode)
             ok, message = False, f"启动失败: {exc}"
         self.result_ready.emit(ok, message)
+
+    def _run_capture(self):
+        capture = getattr(self.client, "capture_network", None)
+        if capture is None:
+            self.result_ready.emit(False, "当前平台不支持抓接口")
+            return
+        try:
+            result = capture(self.seconds, should_stop=lambda: self.stop_requested.is_set())
+            requests_seen = result.get("requests") or []
+            lines = [f"抓到 {len(requests_seen)} 个请求"]
+            for item in requests_seen[:8]:
+                lines.append(f"{item.get('method')} {item.get('url')}")
+            if result.get("saved_to"):
+                lines.append(f"已保存：{result['saved_to']}")
+            self.result_ready.emit(True, "\n".join(lines))
+        except Exception as exc:
+            self.logger.exception("抓接口失败")
+            self.result_ready.emit(False, f"抓接口失败: {exc}")
 
 
 __all__ = [

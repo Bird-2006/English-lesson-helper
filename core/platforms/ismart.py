@@ -62,6 +62,11 @@ PROFILE_FILE = "ismart_profile.json"
 DUMP_DIR = "dumps"
 COMMAND_TIMEOUT = 15
 
+#: 业务接口前缀（自检抓到的真实域名：课程列表、用户、统计都在这台）
+API_BASE = "https://school.ismartlearning.cn"
+#: 课程列表接口（默认取在读课程 status=1）
+COURSE_LIST_PATH = "/client/course/list-of-student"
+
 
 class ISmartError(Exception):
     """iSmart 适配器的可预期错误（端口没开、页面不匹配、脚本执行失败等）。"""
@@ -78,16 +83,18 @@ COURSES_JS = r"""
   const LABELS = ['进入课程', '继续学习', '开始学习', '进入学习'];
   const isLabel = (t) => LABELS.some((l) => t === l || t.indexOf(l) === 0);
   const visible = (el) => !!(el.getBoundingClientRect && el.getBoundingClientRect().width > 0);
+  // 有些页面用 <input type=button value=...> 或 title/aria-label，innerText 是空的
+  const labelOf = (el) => ((el.innerText || el.value || el.getAttribute('title') ||
+    el.getAttribute('aria-label') || '') + '').trim();
 
-  const buttons = Array.from(document.querySelectorAll('a,button,div,span'))
-    .filter((el) => { const t = (el.innerText || '').trim(); return t && isLabel(t) && visible(el); });
-  // 去重：父元素与子元素都是按钮时只留最内层
-  const primary = buttons.filter((el) => !buttons.some((other) => other !== el && el.contains(other)));
+  const candidates = Array.from(document.querySelectorAll('a,button,div,span,input,[role=button]'))
+    .filter((el) => { const t = labelOf(el); return t && isLabel(t) && visible(el); });
+  const primary = candidates.filter((el) => !candidates.some((other) => other !== el && el.contains(other)));
 
   const out = [];
   primary.forEach((btn, index) => {
-    const label = (btn.innerText || '').trim();
-    if (LABELS.indexOf(label) !== 0) return;   // 只认最外层「进入课程」
+    const label = labelOf(btn);
+    if (LABELS.indexOf(label) !== 0) return;   // 只认「进入课程」开头的那个
     let card = btn.parentElement, depth = 0, title = '';
     while (card && depth < 5) {
       const txt = (card.innerText || '').trim();
@@ -494,6 +501,35 @@ def _short_error(exc: BaseException) -> str:
     return type(exc).__name__
 
 
+def extract_list(payload: Any) -> List[Dict[str, Any]]:
+    """从各种「列表接口」返回结构里挖出记录数组。
+
+    这些平台常见包法：``{"data": [...]}``、``{"data": {"list": [...]}}``、
+    ``{"rows": [...]}``、``{"result": {"records": [...]}}``，直接递归找第一个 dict 列表。
+    """
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if not isinstance(payload, dict):
+        return []
+    for key in ("list", "rows", "records", "items", "content", "courses", "data", "result"):
+        if key in payload:
+            found = extract_list(payload[key])
+            if found:
+                return found
+    for value in payload.values():
+        found = extract_list(value)
+        if found:
+            return found
+    return []
+
+
+def _first(payload: Dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if isinstance(payload, dict) and payload.get(key) not in (None, "", []):
+            return payload[key]
+    return None
+
+
 # ---------------------------------------------------------------- CDP 底层
 
 def discover_pages(port: int = DEFAULT_PORT, timeout: float = 3.0) -> List[Dict[str, Any]]:
@@ -586,6 +622,35 @@ class CDPSession:
         except Exception as exc:
             raise ISmartError(f"{method} 通信失败: {exc}") from exc
         raise ISmartError(f"{method} 超时")
+
+    def drain(self, seconds: float, should_stop=None) -> List[Dict[str, Any]]:
+        """读一段时间的事件帧（抓 XHR / 页面事件用）。"""
+        events: List[Dict[str, Any]] = []
+        deadline = time.monotonic() + max(0.0, float(seconds))
+        try:
+            self._ws.settimeout(0.5)
+        except Exception:  # 替身对象可能没有 settimeout
+            pass
+        while time.monotonic() < deadline:
+            if should_stop is not None and should_stop():
+                break
+            try:
+                raw = self._ws.recv()
+            except Exception:
+                continue  # 超时是正常的：说明这段时间没有事件
+            if not raw:
+                break
+            try:
+                message = json.loads(raw)
+            except Exception:
+                continue
+            if "method" in message:
+                events.append(message)
+        try:
+            self._ws.settimeout(self.timeout)
+        except Exception:
+            pass
+        return events
 
     def evaluate(self, expression: str, await_promise: bool = True) -> Any:
         result = self.send(
@@ -829,18 +894,30 @@ class ISmartClient(PlatformClient):
         return data
 
     def get_courses(self) -> Tuple[bool, List[Dict], str]:
+        # 优先走接口：学生中心是 XHR 渲染的，扒 DOM 容易受渲染时机/框架影响
+        ok, payload, err = self.api_get(COURSE_LIST_PATH, {"status": 1, "pager.pageSize": 50})
+        if ok:
+            courses = self._courses_from_records(extract_list(payload))
+            if courses:
+                logger.info("接口拿到 %d 门课程", len(courses))
+                self._remember_list_url()
+                return True, courses, "获取课程成功（接口）"
+            logger.info("接口没有返回课程记录，回退页面扫描")
+        elif err:
+            logger.info("接口取课程失败（%s），回退页面扫描", str(err))
+
         try:
-            courses = self._eval(self.profile.courses_js) or []
-            courses = [c for c in courses if isinstance(c, dict) and c.get("cid")]
+            raw_courses = self._eval(self.profile.courses_js)
         except ISmartError as exc:
             self.last_error_code = ErrCode.PARSE
             return False, [], str(exc)
+        courses = (
+            [c for c in raw_courses if isinstance(c, dict) and c.get("cid")]
+            if isinstance(raw_courses, list)
+            else []
+        )
         if courses:
-            # 记下列表页地址：进课程之后要用它回来
-            try:
-                self._list_url = str(self._eval("location.href") or "")
-            except ISmartError:
-                self._list_url = ""
+            self._remember_list_url()
             return True, courses, "获取课程成功"
 
         self.last_error_code = ErrCode.PARSE
@@ -859,6 +936,77 @@ class ISmartClient(PlatformClient):
             "再点「🔄 刷新课程」；若仍找不到，点「🔎 页面自检」把结果发我，我按真实结构改 courses_js。"
             % (login.get("url") or "未知"),
         )
+
+    def _remember_list_url(self) -> None:
+        try:
+            self._list_url = str(self._eval("location.href") or "")
+        except Exception:
+            self._list_url = ""
+
+    @staticmethod
+    def _courses_from_records(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        courses: List[Dict[str, Any]] = []
+        for item in records or []:
+            cid = _first(item, "courseId", "course_id", "id", "courseCode")
+            if not cid:
+                continue
+            name = _first(item, "courseName", "name", "title", "courseTitle") or f"课程 {cid}"
+            teacher = _first(item, "teacherName", "teacher", "lecturer", "teacherRealName") or ""
+            courses.append(
+                {"cid": str(cid), "name": str(name)[:60], "per": str(teacher)[:40]}
+            )
+        return courses
+
+    # ------------------------------------------------------------ 接口调用
+
+    def cookies(self) -> Dict[str, str]:
+        """取页面登录态 Cookie（优先 CDP，能拿到 HttpOnly）。"""
+        jar: Dict[str, str] = {}
+        try:
+            data = self._attach().send("Network.getAllCookies") or {}
+            for item in data.get("cookies", []) or []:
+                name = item.get("name")
+                if name:
+                    jar[name] = item.get("value", "")
+            if jar:
+                logger.info("已从浏览器取到 %d 个 Cookie", len(jar))
+                return jar
+        except Exception as exc:  # 会话替身/不支持该命令都不该让上层崩掉
+            logger.debug("CDP 取 Cookie 失败: %s", exc)
+
+        try:
+            raw = str(self._eval("document.cookie") or "")
+        except Exception:
+            raw = ""
+        for part in raw.split(";"):
+            if "=" in part:
+                key, value = part.split("=", 1)
+                jar[key.strip()] = value.strip()
+        return jar
+
+    def api_get(self, path: str, params: Dict[str, Any] = None, timeout: float = 10.0) -> Tuple[bool, Any, str]:
+        """带页面登录态调业务接口（只读，用来替代扒 DOM）。"""
+        try:
+            jar = self.cookies()
+        except Exception as exc:
+            return False, None, f"取登录态失败（{_short_error(exc)}）"
+        if not jar:
+            return False, None, "拿不到登录 Cookie，请先在浏览器窗口里登录"
+        url = path if str(path).startswith("http") else API_BASE + str(path)
+        headers = {
+            "Accept": "application/json, text/plain, */*",
+            "Referer": self._list_url or "https://me.ismartlearning.cn/",
+        }
+        try:
+            response = requests.get(url, params=params or {}, cookies=jar, headers=headers, timeout=timeout)
+        except Exception as exc:
+            return False, None, f"接口请求失败（{_short_error(exc)}）"
+        if response.status_code != 200:
+            return False, None, f"接口返回 HTTP {response.status_code}"
+        try:
+            return True, response.json(), ""
+        except ValueError:
+            return False, None, "接口返回的不是 JSON（登录可能已失效）"
 
     # ------------------------------------------------------------ 进/出课程
 
@@ -924,11 +1072,15 @@ class ISmartClient(PlatformClient):
 
     def get_sco_leaves(self, cid, uid, classid, unit_idx) -> Tuple[bool, List, str]:
         try:
-            tasks = self._eval(self.profile.tasks_js) or []
+            raw_tasks = self._eval(self.profile.tasks_js)
         except ISmartError as exc:
             self.last_error_code = ErrCode.PARSE
             return False, [], str(exc)
-        tasks = [t for t in tasks if isinstance(t, dict) and t.get("id")]
+        tasks = (
+            [t for t in raw_tasks if isinstance(t, dict) and t.get("id")]
+            if isinstance(raw_tasks, list)
+            else []
+        )
         if not tasks:
             # 识别不到任务条目时，把「这张课程卡片本身」当任务：
             # 进课程 + 录制流程（或挂时长）照样能跑
@@ -1137,6 +1289,54 @@ class ISmartClient(PlatformClient):
         if str(scoid).startswith("card:"):
             self.return_to_list()
         return True
+
+    # ------------------------------------------------------------ 抓接口
+
+    def capture_network(self, seconds: float = 60.0, should_stop=None) -> Dict[str, Any]:
+        """抓一段时间的网络请求（含 POST body），用来搞清真正的业务接口。"""
+        session = self._attach()
+        session.send("Network.enable")
+        logger.info("开始抓接口 %ss —— 请在浏览器里点几下（进课程/点任务）", int(seconds))
+        events = session.drain(seconds, should_stop)
+
+        aggregated: Dict[str, Dict[str, Any]] = {}
+        for event in events:
+            if event.get("method") != "Network.requestWillBeSent":
+                continue
+            request = (event.get("params") or {}).get("request") or {}
+            url = request.get("url") or ""
+            if not url or url.startswith("data:"):
+                continue
+            entry = aggregated.setdefault(
+                url, {"url": url, "method": request.get("method"), "count": 0, "postData": None}
+            )
+            entry["count"] += 1
+            post = request.get("postData")
+            if post and not entry["postData"]:
+                entry["postData"] = str(post)[:4000]
+
+        result = {
+            "captured_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "seconds": int(seconds),
+            "page": self._list_url or "",
+            "requests": list(aggregated.values()),
+        }
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        target_dir = os.path.join(os.path.dirname(ISmartProfile.path()), DUMP_DIR)
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+            from core.atomic import write_text_atomic
+
+            path = os.path.join(target_dir, f"api_{stamp}.json")
+            write_text_atomic(path, json.dumps(result, ensure_ascii=False, indent=2))
+            result["saved_to"] = path
+        except OSError as exc:
+            logger.warning("保存抓包结果失败: %s", exc)
+
+        logger.info("抓接口完成：%d 个请求", len(result["requests"]))
+        for item in result["requests"][:30]:
+            logger.info("  %s %s", item.get("method"), item.get("url"))
+        return result
 
     # ------------------------------------------------------------ 调试辅助
 

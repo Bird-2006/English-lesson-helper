@@ -206,6 +206,11 @@ class AccountDetailDialog(QDialog):
             self.introspect_btn.setToolTip("导出页面结构摘要（属性/链接/按钮/接口），用于校准选择器")
             self.introspect_btn.clicked.connect(self.introspect_page)
             mode_row.addWidget(self.introspect_btn)
+
+            self.capture_btn = QPushButton("📡 抓接口")
+            self.capture_btn.setToolTip("抓一段时间的网络请求（含 POST body），弄清真正的业务接口")
+            self.capture_btn.clicked.connect(self.capture_api)
+            mode_row.addWidget(self.capture_btn)
         mode_row.addStretch()
         settings_layout.addLayout(mode_row)
 
@@ -607,6 +612,41 @@ class AccountDetailDialog(QDialog):
         self.refresh_courses_btn.setEnabled(True)
         self.update_status(AccountStatus.LOGGED_IN, immediate=True)
         self.refresh_courses()
+
+    def capture_api(self):
+        """抓接口：抓 N 秒网络请求，用于确认课程/任务/提交的真实接口。"""
+        if getattr(self.client, "capture_network", None) is None:
+            self.log("当前平台不支持抓接口")
+            return
+        if self.launch_thread is not None and self.launch_thread.isRunning():
+            return
+
+        from PyQt5.QtWidgets import QInputDialog
+
+        seconds, accepted = QInputDialog.getInt(
+            self,
+            "抓接口",
+            "抓取时长（秒）。开始后请在浏览器里点几下：进入课程 → 打开一个任务 → 提交：",
+            60,
+            10,
+            300,
+        )
+        if not accepted:
+            return
+
+        self.capture_btn.setEnabled(False)
+        self.log(f"📡 开始抓接口 {seconds} 秒 —— 请现在去浏览器里操作")
+        self.launch_thread = workers.LaunchClientThread(self.client, mode="capture", seconds=seconds)
+        self.launch_thread.result_ready.connect(self.on_capture_result)
+        self.launch_thread.start()
+
+    def on_capture_result(self, ok: bool, message: str):
+        self.capture_btn.setEnabled(True)
+        self.log(("✅ " if ok else "❌ ") + message.splitlines()[0])
+        if ok:
+            QMessageBox.information(self, "抓接口完成", message)
+        else:
+            QMessageBox.warning(self, "抓接口失败", message)
 
     def introspect_page(self):
         """页面自检：导出结构化摘要（属性统计/链接/按钮/接口），比整页 HTML 好定位选择器。"""

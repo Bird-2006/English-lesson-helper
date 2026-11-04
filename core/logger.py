@@ -11,6 +11,7 @@
 """
 import logging
 import os
+import sys
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 
@@ -23,6 +24,34 @@ _BACKUP_COUNT = 5
 
 _configured = False
 _log_file = ""
+
+
+class _SafeRotatingFileHandler(RotatingFileHandler):
+    """轮转失败时不要让进程崩、也不要刷一屏 "Logging error"。
+
+    Windows 上另一个实例（比如源码版和便携版同时在跑）会占着同一个日志文件，
+    ``rename`` 必然拿到 ``WinError 32``。这种情况跳过本次轮转、继续往原文件追加即可。
+    """
+
+    def doRollover(self):  # noqa: N802 - 覆盖标准库命名
+        try:
+            super().doRollover()
+        except OSError as exc:
+            print(f"[logging] 跳过日志轮转（文件被占用）: {exc}", file=sys.stderr)
+
+
+def _safe_stream(stream):
+    """让终端输出不会因为编码问题抛异常。
+
+    Windows 中文控制台默认 cp936，日志里带 emoji（🌐 / ⏺）就会
+    ``UnicodeEncodeError``，logging 于是刷一屏 "Logging error"。
+    这里把流改成 UTF-8 + 替换不可编码字符。
+    """
+    try:
+        stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+    return stream
 
 
 def _configure() -> None:
@@ -46,7 +75,7 @@ def _configure() -> None:
         )
 
         try:
-            file_handler = RotatingFileHandler(
+            file_handler = _SafeRotatingFileHandler(
                 _log_file,
                 maxBytes=_MAX_BYTES,
                 backupCount=_BACKUP_COUNT,
@@ -59,7 +88,7 @@ def _configure() -> None:
             # 日志文件写不了也不能让程序起不来
             pass
 
-        console_handler = logging.StreamHandler()
+        console_handler = logging.StreamHandler(_safe_stream(sys.stderr))
         console_handler.setLevel(logging.INFO)
         console_handler.setFormatter(formatter)
         base.addHandler(console_handler)
