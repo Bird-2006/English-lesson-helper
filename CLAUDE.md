@@ -4,7 +4,7 @@
 
 ## 项目概述
 
-**English Lesson Helper V6.0.2**（包名 `english-lesson-helper`）：Windows 桌面 GUI，把两个英语网课平台
+**English Lesson Helper V6.0.3**（包名 `english-lesson-helper`）：Windows 桌面 GUI，把两个英语网课平台
 收敛到同一套界面与任务流程：
 
 | 平台 | 适配器 | 接入方式 | 能力 |
@@ -23,7 +23,7 @@
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe main.py
 
-# 测试（79 个用例；Qt 相关走 offscreen，conftest.py 已配好插件路径）
+# 测试（93 个用例；Qt 相关走 offscreen，conftest.py 已配好插件路径）
 .\.venv\Scripts\python.exe -m pytest
 
 # 静态检查
@@ -76,7 +76,7 @@ ui/
   network_fix_dialog.py    网络工具箱
 tests/                     单元测试 + offscreen 冒烟
 style.qss                  全局样式表
-version_info.txt           exe 版本资源（6.0.2.0），由 .spec 的 version= 引用
+version_info.txt           exe 版本资源（6.0.3.0），由 .spec 的 version= 引用
 EnglishLessonHelper.spec   PyInstaller 打包脚本（onedir 文件夹版）
 EnglishLessonHelper-portable.spec  便携单文件打包脚本（onefile，uac_admin=False）
 ```
@@ -135,8 +135,14 @@ EnglishLessonHelper-portable.spec  便携单文件打包脚本（onefile，uac_a
 
 ## iSmart 流程（CDP）
 
-1. 用户在客户端快捷方式加 `--remote-debugging-port=9222` 并登录；
-2. `discover_pages()` 走 `http://127.0.0.1:9222/json/list`，按 `host_keyword`（默认 `ismart`）挑页面；
+0. **前置**：必须装 iSmart **桌面客户端**；没有客户端时该平台无法使用（网页版不适用）。
+   `find_client_executable()` 依次查注册表卸载项（DisplayIcon / InstallLocation）与
+   `CLIENT_SEARCH_PATTERNS` 通配目录（`%LOCALAPPDATA%\Programs\*iSmart*` 等）；
+   `launch_client()` 带 `--remote-debugging-port=<port>` 启动并用 `probe_cdp_port()` 轮询就绪；
+   界面按钮「🚀 启动并连接」→ `LaunchClientThread`（后台线程，最长 25 秒）→ `launch_and_connect()`。
+1. 用户在客户端快捷方式加 `--remote-debugging-port=9222` 并登录（或用上面的按钮自动做）。
+2. `_attach()` 先试 `profile.port`，不通再扫 `CDP_PORTS`（9222/9223/9224/9229/8315），
+   然后 `GET /json/list`，按 `host_keyword`（默认 `ismart`）挑页面；
 3. `CDPSession` 用 `websocket-client` 连 `webSocketDebuggerUrl`，只用到 `Runtime.evaluate` 与
    `Page.captureScreenshot`；
 4. 三个默认 JS（`courses_js` / `units_js` / `tasks_js`）都是**启发式 DOM 扫描**，结果为空时返回
@@ -163,14 +169,15 @@ EnglishLessonHelper-portable.spec  便携单文件打包脚本（onefile，uac_a
 
 ## 测试与验证现状
 
-- `pytest`：79 用例全绿。含 `test_platforms.py`（注册表、契约、iSmart 无客户端时的失败路径、
-  配置读写、步骤引擎成功/失败/未知步骤、dump_page、core.api 兼容层）。
+- `pytest`：93 用例全绿。含 `test_platforms.py`（注册表、契约、iSmart 无客户端时的失败路径、
+  配置读写、步骤引擎成功/失败/未知步骤、dump_page、core.api 兼容层）与 `test_ismart_discovery.py`
+  （CDP 端口探测、客户端定位、带调试参数启动、超时、错误信息可读性）。
 - `ruff check .`：0 问题（`E4/E7/E9/F/I/UP032/B006/B008/B904`，忽略 `E501`）。
 - offscreen 冒烟：主窗口构建、7 列表格渲染、WeLearn 账号显示、正常退出。
 - 打包实测（ASCII 路径下）：产物含 `style.qss`，不含 `accounts.json`，exe 版本资源生效。
-- 便携版实测：`dist\EnglishLessonHelper-portable.exe` 40.38MB；`VersionInfo` 为 6.0.2.0；
+- 便携版实测：`dist\EnglishLessonHelper-portable.exe` 40.39MB；`VersionInfo` 为 6.0.3.0；
   清单为 `asInvoker`（无 UAC）；双击后是 1 个 bootloader + 1 个应用进程，在 **exe 同级** 生成
-  `logs/WeLearnV4_*.log`，日志首行为 `English Lesson Helper V6.0.2 启动`。
+  `logs/WeLearnV4_*.log`，日志首行为 `English Lesson Helper V6.0.3 启动`。
 - 跨线程真实链路验证（三个独立线程）：登录成功 → 4 门课程 → uid=12086092/classid=788917/8 个单元 → 34 个 SCO。
 - 本机 `accounts.json` 口令为 DPAPI 密文。
 

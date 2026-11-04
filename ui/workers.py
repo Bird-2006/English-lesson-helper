@@ -484,12 +484,36 @@ class TimeStudyThread(_BaseThread):
             self.progress_update.emit(ProgressEvent.ERROR, f"刷时长过程中发生错误: {exc}")
 
 
+class LaunchClientThread(_BaseThread):
+    """带调试端口启动本地客户端（iSmart），耗时操作放后台避免卡界面。"""
+
+    result_ready = pyqtSignal(bool, str)
+
+    def __init__(self, client, port: int = None):
+        super().__init__()
+        self.client = client
+        self.port = port
+
+    def run(self):
+        launcher = getattr(self.client, "launch_and_connect", None)
+        if launcher is None:
+            self.result_ready.emit(False, "当前平台不支持自动启动客户端")
+            return
+        try:
+            ok, message = launcher(self.port) if self.port else launcher()
+        except Exception as exc:
+            self.logger.exception("启动客户端失败")
+            ok, message = False, f"启动客户端失败: {exc}"
+        self.result_ready.emit(ok, message)
+
+
 __all__ = [
     "LoginThread",
     "CourseThread",
     "UnitsThread",
     "StudyThread",
     "TimeStudyThread",
+    "LaunchClientThread",
     "format_duration",
     "MAX_RETRY_ROUNDS",
 ]

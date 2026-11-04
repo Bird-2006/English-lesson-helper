@@ -85,6 +85,7 @@ class AccountDetailDialog(QDialog):
         self.course_thread = None
         self.units_thread = None
         self.study_thread = None
+        self.launch_thread = None
 
         self.task_progress = TaskProgress()
         self.current_task_id: Optional[str] = None
@@ -180,6 +181,11 @@ class AccountDetailDialog(QDialog):
         self.mode_combo.currentTextChanged.connect(self.on_mode_changed)
         mode_row.addWidget(self.mode_combo)
         if self.client.supports(Capability.CDP):
+            self.launch_btn = QPushButton("🚀 启动并连接")
+            self.launch_btn.setToolTip("带 --remote-debugging-port 启动本地客户端并自动连接")
+            self.launch_btn.clicked.connect(self.launch_client)
+            mode_row.addWidget(self.launch_btn)
+
             self.dump_btn = QPushButton("🧭 抓取页面结构")
             self.dump_btn.setToolTip("导出当前客户端页面的 HTML 与截图，用于校准选择器")
             self.dump_btn.clicked.connect(self.dump_page)
@@ -520,6 +526,35 @@ class AccountDetailDialog(QDialog):
         self.homework_widget.setVisible(is_homework)
         self.time_widget.setVisible(not is_homework)
         self.start_btn.setText("▶️ 开始刷作业" if is_homework else "▶️ 开始刷时长")
+
+    def launch_client(self):
+        """带调试端口启动本地客户端（后台线程，避免 25 秒探测卡界面）。"""
+        launcher = getattr(self.client, "launch_and_connect", None)
+        if launcher is None:
+            self.log("当前平台不支持自动启动客户端")
+            return
+        if self.launch_thread is not None and self.launch_thread.isRunning():
+            return
+        if hasattr(self, "launch_btn"):
+            self.launch_btn.setEnabled(False)
+        self.log("正在启动客户端（带调试端口）...")
+        self.launch_thread = workers.LaunchClientThread(self.client)
+        self.launch_thread.result_ready.connect(self.on_launch_result)
+        self.launch_thread.start()
+
+    def on_launch_result(self, ok: bool, message: str):
+        if hasattr(self, "launch_btn"):
+            self.launch_btn.setEnabled(True)
+        self.log(("✅ " if ok else "❌ ") + message)
+        if not ok:
+            QMessageBox.warning(self, "无法连接客户端", message)
+            return
+        self.is_logged_in = True
+        self.login_btn.setText("✅ 已登录")
+        self.login_btn.setEnabled(False)
+        self.refresh_courses_btn.setEnabled(True)
+        self.update_status(AccountStatus.LOGGED_IN, immediate=True)
+        self.refresh_courses()
 
     def dump_page(self):
         """导出当前客户端页面结构，便于校准 iSmart 选择器。"""

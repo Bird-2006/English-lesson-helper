@@ -22,8 +22,10 @@ iSmart 客户端判题在本地完成，但上报分数时要带 native 生成�
 配置存放于数据目录（默认 ``<数据目录>/ismart_profile.json``）。
 """
 import base64
+import glob
 import json
 import os
+import subprocess
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
@@ -204,6 +206,147 @@ class ISmartProfile:
         write_text_atomic(target, json.dumps(asdict(self), ensure_ascii=False, indent=2), ".tmp_ismart_")
 
 
+# ---------------------------------------------------------------- 客户端探测
+
+#: 依次尝试的调试端口（客户端版本/安装方式不同，端口不一定是我们默认的那个）
+CDP_PORTS: Tuple[int, ...] = (DEFAULT_PORT, 9223, 9224, 9229, 8315)
+
+#: 找客户端时扫描的目录（支持通配符）
+CLIENT_SEARCH_PATTERNS: Tuple[str, ...] = (
+    r"%LOCALAPPDATA%\Programs\*iSmart*",
+    r"%LOCALAPPDATA%\Programs\*ismart*",
+    r"%LOCALAPPDATA%\*iSmart*",
+    r"%APPDATA%\*iSmart*",
+    r"%ProgramFiles%\*iSmart*",
+    r"%ProgramFiles(x86)%\*iSmart*",
+    r"%ProgramFiles%\*ismart*",
+    r"%ProgramFiles(x86)%\*ismart*",
+)
+
+_EXE_HINTS = ("ismart.exe", "ismartclient.exe", "ismartlearning.exe")
+
+
+def probe_cdp_port(port: int, timeout: float = 1.0) -> Optional[Dict[str, Any]]:
+    """检查某端口是不是 Chromium 的 DevTools 端点，是则返回 ``/json/version`` 内容。"""
+    try:
+        response = requests.get(f"http://127.0.0.1:{port}/json/version", timeout=timeout)
+        if response.status_code != 200:
+            return None
+        data = response.json()
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    # Chromium 系都会带 webSocketDebuggerUrl / Browser 字段
+    if "webSocketDebuggerUrl" in data or "Browser" in data:
+        return data
+    return None
+
+
+def find_cdp_port(candidates: Tuple[int, ...] = None, timeout: float = 1.0) -> Optional[int]:
+    """在候选端口里找到第一个可用的 DevTools 端点。"""
+    for port in candidates or CDP_PORTS:
+        if probe_cdp_port(port, timeout=timeout):
+            logger.info("在端口 %s 发现 DevTools 端点", port)
+            return port
+    return None
+
+
+def _registry_candidates():
+    """从卸载表里找 iSmart 的安装路径（DisplayIcon / InstallLocation）。"""
+    try:
+        import winreg
+    except ImportError:  # pragma: no cover - 非 Windows
+        return
+
+    sub_keys = (
+        r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+        r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+    )
+    for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+        for sub in sub_keys:
+            try:
+                base = winreg.OpenKey(root, sub)
+            except OSError:
+                continue
+            for index in range(winreg.QueryInfoKey(base)[0]):
+                try:
+                    entry = winreg.OpenKey(base, winreg.EnumKey(base, index))
+                except OSError:
+                    continue
+                try:
+                    display = str(winreg.QueryValueEx(entry, "DisplayName")[0] or "")
+                except OSError:
+                    continue
+                if "ismart" not in display.replace(" ", "").lower():
+                    continue
+                for value_name in ("DisplayIcon", "InstallLocation"):
+                    try:
+                        raw = str(winreg.QueryValueEx(entry, value_name)[0] or "")
+                    except OSError:
+                        continue
+                    candidate = raw.split(",")[0].strip().strip('"')
+                    if candidate.lower().endswith(".exe"):
+                        yield candidate
+                    elif candidate:
+                        for hint in _EXE_HINTS:
+                            yield os.path.join(candidate, hint)
+
+
+def find_client_executable() -> Optional[str]:
+    """定位 iSmart 桌面客户端可执行文件；找不到返回 None。"""
+    seen = set()
+    for candidate in _registry_candidates():
+        key = candidate.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        if os.path.isfile(candidate) and "ismart" in os.path.basename(candidate).lower():
+            return candidate
+
+    for pattern in CLIENT_SEARCH_PATTERNS:
+        expanded = os.path.expandvars(pattern)
+        for directory in glob.glob(expanded):
+            if not os.path.isdir(directory):
+                continue
+            for hint in _EXE_HINTS:
+                candidate = os.path.join(directory, hint)
+                if os.path.isfile(candidate):
+                    return candidate
+            matches = glob.glob(os.path.join(directory, "*.exe"))
+            for candidate in matches:
+                if "ismart" in os.path.basename(candidate).lower():
+                    return candidate
+    return None
+
+
+def launch_client(port: int = DEFAULT_PORT, executable: str = None, wait_seconds: float = 25.0) -> Tuple[bool, str]:
+    """带调试端口启动客户端，并等端口就绪。"""
+    exe = executable or find_client_executable()
+    if not exe:
+        return False, "未找到 iSmart 客户端可执行文件，请先安装桌面客户端"
+
+    try:
+        subprocess.Popen([exe, f"--remote-debugging-port={port}"], close_fds=True)
+    except Exception as exc:
+        return False, f"启动客户端失败: {exc}"
+
+    deadline = time.monotonic() + wait_seconds
+    while time.monotonic() < deadline:
+        if probe_cdp_port(port):
+            return True, f"客户端已启动，调试端口 {port} 就绪"
+        time.sleep(0.5)
+    return False, f"客户端已启动，但 {int(wait_seconds)} 秒内调试端口 {port} 未就绪"
+
+
+def _short_error(exc: BaseException) -> str:
+    """把 requests/urllib3 的长堆栈压成一句人话。"""
+    text = str(exc)
+    if "Max retries exceeded" in text or "Connection refused" in text or "10061" in text:
+        return "端口未开放"
+    return type(exc).__name__
+
+
 # ---------------------------------------------------------------- CDP 底层
 
 def discover_pages(port: int = DEFAULT_PORT, timeout: float = 3.0) -> List[Dict[str, Any]]:
@@ -213,10 +356,7 @@ def discover_pages(port: int = DEFAULT_PORT, timeout: float = 3.0) -> List[Dict[
         response.raise_for_status()
         pages = response.json()
     except Exception as exc:
-        raise ISmartError(
-            f"无法连接调试端口 {port}：{exc}。请给 iSmart 客户端启动参数加上 "
-            f"--remote-debugging-port={port} 并保持运行"
-        ) from exc
+        raise ISmartError(f"无法连接调试端口 {port}（{_short_error(exc)}）") from exc
     return [page for page in pages if page.get("type") == "page" and page.get("webSocketDebuggerUrl")]
 
 
@@ -302,7 +442,15 @@ class ISmartClient(PlatformClient):
         if self._session is not None:
             return self._session
 
-        pages = discover_pages(self.profile.port)
+        # 客户端版本不同、启动参数不同，端口不一定是 9222：先试配置里的端口，再扫候选端口
+        port = self.profile.port
+        if find_cdp_port((port,), timeout=1.0) is None:
+            discovered = find_cdp_port(CDP_PORTS, timeout=1.0)
+            if discovered:
+                port = discovered
+        self.profile.port = port
+
+        pages = discover_pages(port)
         keyword = (self.profile.host_keyword or "").lower()
         candidate = None
         for page in pages:
@@ -321,16 +469,47 @@ class ISmartClient(PlatformClient):
         logger.info("已附着 iSmart 页面: %s", candidate.get("title") or candidate.get("url"))
         return self._session
 
+    def launch_and_connect(self, port: int = None, wait_seconds: float = 25.0) -> Tuple[bool, str]:
+        """带调试端口启动本地客户端并连接（供界面「启动并连接」按钮调用）。"""
+        target_port = int(port or self.profile.port)
+        exe = find_client_executable()
+        if not exe:
+            self.last_error_code = ErrCode.CDP
+            return False, (
+                "未找到 iSmart 桌面客户端。\n"
+                "本适配器通过 Chrome DevTools Protocol 驱动官方客户端，必须有桌面版；"
+                "只有网页版时无法使用此平台（需要先逆向 ut 签名并直连接口）。"
+            )
+        logger.info("启动 iSmart 客户端: %s（端口 %s）", exe, target_port)
+        ok, message = launch_client(target_port, exe, wait_seconds)
+        if not ok:
+            self.last_error_code = ErrCode.CDP
+            return False, message
+        self.profile.port = target_port
+        return self.login("", "")
+
     def login(self, username: str, password: str) -> Tuple[bool, str]:
         self.last_error_code = ""
         try:
             self._attach()
         except ISmartError as exc:
-            # 用独立错误码，界面才会把「请加 --remote-debugging-port=9222」这条
-            # 可操作的原文显示出来，而不是笼统的「无法连接服务器」
             self.last_error_code = ErrCode.CDP
-            return False, str(exc)
+            return False, self._explain_unavailable(str(exc))
         return True, "已连接 iSmart 客户端（登录态以客户端为准）"
+
+    def _explain_unavailable(self, reason: str) -> str:
+        """把「连不上」翻译成一眼能照做的下一步（不再甩 urllib3 堆栈）。"""
+        tried = "、".join(str(port) for port in (self.profile.port, *CDP_PORTS))
+        executable = find_client_executable()
+        if executable:
+            tail = f"已找到客户端：{executable}\n点「🚀 启动并连接」可自动带调试参数启动。"
+        else:
+            tail = (
+                "未在本机找到 iSmart 桌面客户端。\n"
+                "本适配器依赖桌面客户端（用 CDP 驱动页面），只有网页版时用不了；"
+                "装好桌面版后点「🚀 启动并连接」。"
+            )
+        return f"{reason}\n已尝试端口：{tried}\n{tail}"
 
     def close(self) -> None:
         if self._session is not None:

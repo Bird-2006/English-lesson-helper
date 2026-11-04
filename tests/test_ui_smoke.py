@@ -177,6 +177,7 @@ def test_detail_dialog_ismart_hides_duration_and_adds_dump(app, monkeypatch, tmp
     assert dialog.mode_combo.count() == 1
     assert dialog.mode_combo.currentText() == TaskType.HOMEWORK
     assert hasattr(dialog, "dump_btn")
+    assert hasattr(dialog, "launch_btn")
     assert "iSmart" in dialog.windowTitle()
     dialog.close()
 
