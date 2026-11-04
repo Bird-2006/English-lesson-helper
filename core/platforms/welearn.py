@@ -7,7 +7,7 @@
 
 - 登录参数原来靠 ``url.split("%26")`` 再 ``split("%3D")`` 抠
   ``code_challenge`` / ``state``，服务端换个参数顺序就静默失效 →
-  改用 ``urllib.parse`` 正规解析（抽成纯函数便于测试）；
+  改用按参数名切片的方式解析（抽成纯函数便于测试，且不依赖参数顺序）；
 - 全部线程共用一个 ``requests.Session``，cookie jar 会被并发线程同时改写 →
   改为线程局部 Session；
 - CMI 报文用 f-string 手拼 JSON、成功判定靠 ``'"ret":0' in text`` →
@@ -20,7 +20,6 @@ import re
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import parse_qs, urlparse
 
 import requests
 
@@ -44,14 +43,36 @@ HEARTBEAT_SECONDS = 60
 MAX_LOGIN_RETRY = 3
 
 
+def _grab_parameter(url: str, key: str) -> str:
+    """从 prelogin URL 里按参数名取值（保留原始百分号编码）。
+
+    服务端真实返回形如::
+
+        https://sso.sflep.com/idsvr/transfer.html?returnUrl=%2Fconnect%2F...%3F
+        client_id%3Dwelearn_web%26...%26code_challenge%3DXXX%26...%26state%3DYYY
+
+    参数被二次编码后嵌在 ``returnUrl`` 里：分隔符是字面量 ``%26``、等号是 ``%3D``。
+    若将来退回普通查询串，则走 ``&`` / ``=`` 分支。两种形态都按参数名匹配，
+    因此不再依赖旧实现写死的切片下标。
+    """
+    if "%26" in url:
+        pattern = r"(?:%26|%3F|\?)" + re.escape(key) + r"%3D(.*?)(?=%26|$)"
+    else:
+        pattern = r"[?&]" + re.escape(key) + r"=(.*?)(?=&|$)"
+    match = re.search(pattern, url)
+    return match.group(1) if match else ""
+
+
 def parse_prelogin_url(url: str) -> Tuple[str, str]:
     """从 prelogin 重定向后的 URL 里取 ``code_challenge`` 与 ``state``。
 
+    返回值是 **原始百分号编码片段**（与旧实现一致），因为后面要原样拼进
+    ``rturl``；``state`` 自身带 ``%253D`` 这类二次编码，解码反而会破坏服务端校验。
+
     取不到时抛 ``ValueError``，由调用方转成「登录URL格式异常」。
     """
-    query = parse_qs(urlparse(url).query)
-    challenge = (query.get("code_challenge") or [""])[0]
-    state = (query.get("state") or [""])[0]
+    challenge = _grab_parameter(url, "code_challenge")
+    state = _grab_parameter(url, "state")
     if not challenge or not state:
         raise ValueError("prelogin URL 缺少 code_challenge/state")
     return challenge, state

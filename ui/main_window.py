@@ -59,6 +59,11 @@ STARTUP_NOTICE = """使用声明：
 感谢您的理解与支持！"""
 
 CHANGELOG = [
+    ("V6.0.1", [
+        "修复登录失败：prelogin 实际跳转到 sso.sflep.com/idsvr/transfer.html，"
+        "参数二次编码后嵌在 returnUrl 里，重构时的解析方式取不到 code_challenge/state",
+        "登录失败提示改为按错误码区分（超时 / 网络 / 解析 / 账号密码），不再一律「服务器响应异常」",
+    ]),
     ("V6.0.0", [
         "项目更名 English Lesson Helper，合并 WeLearn 与 iSmart 两个平台",
         "新增平台适配层 core/platforms，按账号所属平台创建客户端",

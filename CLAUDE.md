@@ -4,7 +4,7 @@
 
 ## 项目概述
 
-**English Lesson Helper V6.0.0**（包名 `english-lesson-helper`）：Windows 桌面 GUI，把两个英语网课平台
+**English Lesson Helper V6.0.1**（包名 `english-lesson-helper`）：Windows 桌面 GUI，把两个英语网课平台
 收敛到同一套界面与任务流程：
 
 | 平台 | 适配器 | 接入方式 | 能力 |
@@ -23,7 +23,7 @@
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe main.py
 
-# 测试（75 个用例；Qt 相关走 offscreen，conftest.py 已配好插件路径）
+# 测试（77 个用例；Qt 相关走 offscreen，conftest.py 已配好插件路径）
 .\.venv\Scripts\python.exe -m pytest
 
 # 静态检查
@@ -68,7 +68,7 @@ ui/
   network_fix_dialog.py    网络工具箱
 tests/                     单元测试 + offscreen 冒烟
 style.qss                  全局样式表
-version_info.txt           exe 版本资源（6.0.0.0），由 .spec 的 version= 引用
+version_info.txt           exe 版本资源（6.0.1.0），由 .spec 的 version= 引用
 EnglishLessonHelper.spec   PyInstaller 打包脚本
 ```
 
@@ -98,9 +98,17 @@ EnglishLessonHelper.spec   PyInstaller 打包脚本
 
 ## WeLearn 流程
 
-1. `login`：`GET /user/prelogin.aspx` → `parse_prelogin_url()` 用 `parse_qs` 取 `code_challenge`/`state`
+1. `login`：`GET /user/prelogin.aspx` → `parse_prelogin_url()` 取 `code_challenge`/`state`
    → `generate_cipher_text` → `POST sso.sflep.com/idsvr/account/login`（`code==1` 判密码错，不重试）
    → 再 GET 一次 prelogin 收 cookie。会话是**线程局部**的（`threading.local`），并发不踩 cookie。
+
+   ⚠️ **prelogin 的真实返回形态**（踩过坑，别再改回去）：它跳到
+   `https://sso.sflep.com/idsvr/transfer.html?returnUrl=%2Fconnect%2Fauthorize%2Fcallback%3F...%26code_challenge%3DXXX%26...%26state%3DYYY`，
+   即参数被**二次编码后嵌在 `returnUrl` 里**：分隔符是字面量 `%26`、等号是 `%3D`。
+   所以不能用 `parse_qs` 解析顶层 query（取不到），也**不能对值做 unquote**
+   （`state` 里带 `%253D`，解码会破坏服务端校验）。`_grab_parameter()` 按参数名匹配、
+   原样返回编码片段，且顺序无关；回归测试见
+   `tests/test_api.py::test_parse_prelogin_url_handles_nested_encoded_url`。
 2. 课程结构：`authCourse.aspx?action=gmc` → `course_info.aspx`（正则抠 uid/classid）→
    `StudyStat.aspx?action=courseunits` → `?action=scoLeaves`。可见/完成判断仍是中文字符串匹配
    （`isvisible != "false"`、`"未" in iscomplete`）。
@@ -140,7 +148,7 @@ EnglishLessonHelper.spec   PyInstaller 打包脚本
 
 ## 测试与验证现状
 
-- `pytest`：75 用例全绿。含 `test_platforms.py`（注册表、契约、iSmart 无客户端时的失败路径、
+- `pytest`：77 用例全绿。含 `test_platforms.py`（注册表、契约、iSmart 无客户端时的失败路径、
   配置读写、步骤引擎成功/失败/未知步骤、dump_page、core.api 兼容层）。
 - `ruff check .`：0 问题（`E4/E7/E9/F/I/UP032/B006/B008/B904`，忽略 `E501`）。
 - offscreen 冒烟：主窗口构建、7 列表格渲染、WeLearn 账号显示、正常退出。
