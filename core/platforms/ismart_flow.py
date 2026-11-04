@@ -180,6 +180,131 @@ HAS_TEXT_JS = r"""
 """
 
 
+#: 页面自检：比抓整页 HTML 更有用的结构化摘要（属性统计 / 链接 / 按钮 / XHR 接口）
+#:
+#: 必须穿透 **iframe 与 Shadow DOM**：iSmart 这类平台常把内容放在子 frame 或 Web Component 里，
+#: 只看主文档会得到「标题有、内容全空」的假象（实测踩过）。
+INTROSPECT_JS = r"""
+(() => {
+  const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
+  const textOf = (el) => clean(el.innerText || el.textContent).slice(0, 60);
+
+  const docs = [];
+  const collectDocs = (doc, depth) => {
+    if (!doc || depth > 3 || docs.indexOf(doc) >= 0) return;
+    docs.push(doc);
+    let frames = [];
+    try { frames = Array.from(doc.querySelectorAll('iframe, frame')); } catch (e) {}
+    frames.forEach((frame) => {
+      try { if (frame.contentDocument) collectDocs(frame.contentDocument, depth + 1); } catch (e) {}
+    });
+  };
+  collectDocs(document, 0);
+
+  const elementsOf = (doc) => {
+    const out = [];
+    const walk = (root) => {
+      let list = [];
+      try { list = Array.from(root.querySelectorAll('*')); } catch (e) { return; }
+      list.forEach((el) => {
+        out.push(el);
+        if (el.shadowRoot) walk(el.shadowRoot);
+      });
+    };
+    walk(doc);
+    return out;
+  };
+
+  const out = {
+    url: location.href,
+    title: document.title,
+    frameCount: docs.length - 1,
+    text: '',
+    dataAttrs: [],
+    anchors: [],
+    buttons: [],
+    inputs: [],
+    xhr: [],
+    likelyLogin: false
+  };
+
+  const counts = {};
+  const texts = [];
+  docs.forEach((doc) => {
+    if (doc.body) texts.push(clean(doc.body.innerText));
+    elementsOf(doc).forEach((el) => {
+      if (!el.dataset) return;
+      Object.keys(el.dataset).forEach((key) => {
+        const attr = 'data-' + key.replace(/[A-Z]/g, (m) => '-' + m.toLowerCase());
+        counts[attr] = (counts[attr] || 0) + 1;
+      });
+    });
+  });
+  out.text = clean(texts.join(' ')).slice(0, 400);
+  out.dataAttrs = Object.keys(counts)
+    .sort((a, b) => counts[b] - counts[a])
+    .slice(0, 20)
+    .map((attr) => [attr, counts[attr]]);
+
+  docs.forEach((doc) => {
+    let anchors = [], buttons = [], inputs = [];
+    try { anchors = Array.from(doc.querySelectorAll('a[href]')); } catch (e) {}
+    try { buttons = Array.from(doc.querySelectorAll('button, [role=button], .btn, .el-button')); } catch (e) {}
+    try { inputs = Array.from(doc.querySelectorAll('input, select, textarea')); } catch (e) {}
+
+    anchors.forEach((a) => {
+      if (out.anchors.length < 40) out.anchors.push({ text: textOf(a), href: a.getAttribute('href') });
+    });
+    buttons.forEach((b) => {
+      const label = textOf(b);
+      if (label && out.buttons.length < 40 && out.buttons.indexOf(label) < 0) out.buttons.push(label);
+    });
+    inputs.forEach((i) => {
+      if (out.inputs.length < 20) {
+        out.inputs.push({ type: i.type || i.tagName.toLowerCase(), name: i.name || i.id || '', placeholder: i.placeholder || '' });
+      }
+    });
+    try {
+      const win = doc.defaultView;
+      win.performance.getEntriesByType('resource').forEach((entry) => {
+        const kind = entry.initiatorType;
+        if ((kind === 'xmlhttprequest' || kind === 'fetch') && out.xhr.length < 40) out.xhr.push(entry.name);
+      });
+    } catch (e) {}
+  });
+
+  out.likelyLogin = /login|signin|登录|密码/i.test(out.title + ' ' + out.url) ||
+    out.inputs.some((i) => i.type === 'password') ||
+    /登录|密码|验证码/.test(out.text.slice(0, 200));
+  return out;
+})()
+"""
+
+#: 快速判断当前是不是登录页（省一次完整自检；同样穿透 iframe）
+LOGIN_CHECK_JS = r"""
+(() => {
+  const docs = [document];
+  try {
+    Array.from(document.querySelectorAll('iframe, frame')).forEach((f) => {
+      try { if (f.contentDocument) docs.push(f.contentDocument); } catch (e) {}
+    });
+  } catch (e) {}
+  const hasPassword = docs.some((doc) => {
+    try { return !!doc.querySelector('input[type=password]'); } catch (e) { return false; }
+  });
+  const text = docs.map((doc) => (doc.body ? doc.body.innerText : '')).join(' ').slice(0, 300);
+  const title = document.title || '';
+  return {
+    url: location.href,
+    title: title,
+    frames: docs.length - 1,
+    isLogin: /login|signin/i.test(location.href) || /登录/.test(title) ||
+             (hasPassword && /登录|密码/.test(text))
+  };
+})()
+"""
+
+
 class FlowError(Exception):
     """录制/回放过程中的可预期错误。"""
 

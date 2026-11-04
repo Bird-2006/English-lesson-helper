@@ -37,6 +37,8 @@ from core.logger import get_logger
 from core.paths import data_path
 from core.platforms.base import Capability, PlatformClient, PlatformInfo
 from core.platforms.ismart_flow import (
+    INTROSPECT_JS,
+    LOGIN_CHECK_JS,
     RECORDER_BOOTSTRAP_JS,
     RECORDER_START_JS,
     RECORDER_STOP_JS,
@@ -721,6 +723,54 @@ class ISmartClient(PlatformClient):
     def _eval(self, expression: str) -> Any:
         return self._attach().evaluate(expression)
 
+    # ------------------------------------------------------------ 页面自检
+
+    def login_page_info(self) -> Dict[str, Any]:
+        """当前页面是不是登录页（用于给出「先登录」这种能照做的提示）。"""
+        try:
+            data = self._eval(LOGIN_CHECK_JS) or {}
+        except ISmartError:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def page_introspect(self) -> Dict[str, Any]:
+        """结构化自检：属性统计 / 链接 / 按钮 / XHR 接口，比整页 HTML 有用得多。"""
+        data: Dict[str, Any] = {}
+        # 页面刚打开时内容是异步渲染的，立刻读会得到「标题有、内容全空」的假象（实测踩过）
+        for _ in range(6):
+            data = self._eval(INTROSPECT_JS) or {}
+            if not isinstance(data, dict):
+                data = {}
+            if data.get("text") or data.get("inputs") or data.get("anchors"):
+                break
+            time.sleep(0.8)
+
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        target_dir = os.path.join(os.path.dirname(ISmartProfile.path()), DUMP_DIR)
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+            from core.atomic import write_text_atomic
+
+            path = os.path.join(target_dir, f"introspect_{stamp}.json")
+            write_text_atomic(path, json.dumps(data, ensure_ascii=False, indent=2))
+            data["saved_to"] = path
+        except OSError as exc:
+            logger.warning("保存自检结果失败: %s", exc)
+
+        logger.info(
+            "页面自检: url=%s title=%r 登录页=%s data-*前3=%s 链接=%d 按钮=%d XHR=%d",
+            data.get("url"),
+            data.get("title"),
+            data.get("likelyLogin"),
+            (data.get("dataAttrs") or [])[:3],
+            len(data.get("anchors") or []),
+            len(data.get("buttons") or []),
+            len(data.get("xhr") or []),
+        )
+        for url in (data.get("xhr") or [])[:10]:
+            logger.info("  接口: %s", url)
+        return data
+
     def get_courses(self) -> Tuple[bool, List[Dict], str]:
         try:
             courses = self._eval(self.profile.courses_js) or []
@@ -728,10 +778,25 @@ class ISmartClient(PlatformClient):
         except ISmartError as exc:
             self.last_error_code = ErrCode.PARSE
             return False, [], str(exc)
-        if not courses:
-            self.last_error_code = ErrCode.PARSE
-            return False, [], "页面里没找到课程元素，请先打开课程列表页，或点「抓取页面结构」后调整 courses_js"
-        return True, courses, "获取课程成功"
+        if courses:
+            return True, courses, "获取课程成功"
+
+        self.last_error_code = ErrCode.PARSE
+        login = self.login_page_info()
+        if login.get("isLogin"):
+            return (
+                False,
+                [],
+                "当前还是登录页（%s）。请先用「🌐 浏览器模式」打开的窗口完成登录，"
+                "进到课程列表页后回到本窗口点「🔄 刷新课程」。" % (login.get("title") or "登录"),
+            )
+        return (
+            False,
+            [],
+            "当前页面不是课程列表（url=%s）。请先在浏览器窗口里进到课程列表页，"
+            "再点「🔄 刷新课程」；若仍找不到，点「🔎 页面自检」把结果发我，我按真实结构改 courses_js。"
+            % (login.get("url") or "未知"),
+        )
 
     def get_course_info(self, cid) -> Tuple[bool, Optional[Dict], str]:
         try:

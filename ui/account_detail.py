@@ -201,6 +201,11 @@ class AccountDetailDialog(QDialog):
             self.record_btn.setToolTip("开始录制后在窗口里手动走一遍流程，再点一次结束并保存")
             self.record_btn.toggled.connect(self.toggle_recording)
             mode_row.addWidget(self.record_btn)
+
+            self.introspect_btn = QPushButton("🔎 页面自检")
+            self.introspect_btn.setToolTip("导出页面结构摘要（属性/链接/按钮/接口），用于校准选择器")
+            self.introspect_btn.clicked.connect(self.introspect_page)
+            mode_row.addWidget(self.introspect_btn)
         mode_row.addStretch()
         settings_layout.addLayout(mode_row)
 
@@ -602,6 +607,38 @@ class AccountDetailDialog(QDialog):
         self.refresh_courses_btn.setEnabled(True)
         self.update_status(AccountStatus.LOGGED_IN, immediate=True)
         self.refresh_courses()
+
+    def introspect_page(self):
+        """页面自检：导出结构化摘要（属性统计/链接/按钮/接口），比整页 HTML 好定位选择器。"""
+        introspect = getattr(self.client, "page_introspect", None)
+        if introspect is None:
+            self.log("当前平台不支持页面自检")
+            return
+        try:
+            data = introspect()
+        except Exception as exc:
+            self.log(f"❌ 页面自检失败: {exc}")
+            logger.error("页面自检失败: %s", exc)
+            return
+
+        attrs = "，".join(f"{name}×{count}" for name, count in (data.get("dataAttrs") or [])[:6]) or "无"
+        lines = [
+            f"标题：{data.get('title') or '(空)'}",
+            f"地址：{data.get('url') or '(空)'}",
+            f"登录页：{'是' if data.get('likelyLogin') else '否'}",
+            f"data-* 属性：{attrs}",
+            f"可见链接：{len(data.get('anchors') or [])} 个｜按钮：{len(data.get('buttons') or [])} 个",
+            f"接口（XHR/fetch）：{len(data.get('xhr') or [])} 个",
+        ]
+        if data.get("xhr"):
+            lines.append("")
+            lines.append("接口示例：")
+            lines.extend("  " + u for u in (data.get("xhr") or [])[:5])
+        if data.get("saved_to"):
+            lines.extend(["", f"完整结果：{data['saved_to']}"])
+
+        self.log("🔎 " + "；".join(lines[:5]))
+        QMessageBox.information(self, "页面自检", "\n".join(lines))
 
     def toggle_recording(self, checked: bool):
         """录制 iSmart 页面操作流程（点一次开始，再点一次结束并存盘）。"""

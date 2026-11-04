@@ -18,6 +18,10 @@ logger = get_logger("Main")
 
 def exception_hook(exctype, value, traceback_obj):
     """全局异常钩子：记录、提示，但不让程序闪退。"""
+    # Ctrl+C / 主动退出不是程序错误，吞掉即可（否则日志里会留一条假的 CRITICAL）
+    if issubclass(exctype, (KeyboardInterrupt, SystemExit)):
+        return
+
     message = "".join(traceback.format_exception(exctype, value, traceback_obj))
     print(f"未捕获的异常:\n{message}", file=sys.stderr)
     logger.critical("未捕获的异常:\n%s", message)

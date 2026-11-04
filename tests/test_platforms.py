@@ -220,7 +220,9 @@ def test_get_courses_empty_result_gives_actionable_message():
     client = _client_with_stub(profile, [[]])
     ok, courses, message = client.get_courses()
     assert ok is False
-    assert "抓取页面结构" in message
+    # 现在的提示会区分「登录页」与「不在列表页」，并指向刷新课程 / 页面自检
+    assert "刷新课程" in message
+    assert "页面自检" in message
 
 
 def test_get_course_info_falls_back_to_placeholder_ids():

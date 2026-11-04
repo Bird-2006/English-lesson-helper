@@ -45,7 +45,7 @@ python main.py
 ## 测试与静态检查
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest          # 127 个用例，Qt 相关走 offscreen 后端
+.\.venv\Scripts\python.exe -m pytest          # 151 个用例，Qt 相关走 offscreen 后端
 .\.venv\Scripts\python.exe -m ruff check .    # 规则集见 pyproject.toml
 ```
 
@@ -141,11 +141,14 @@ iSmart 适配器是通过 **Chrome DevTools Protocol 驱动一个真实页面**�
 **B（浏览器模式）的用法**——这是没有客户端时最省事的路径：
 
 1. 点「🌐 浏览器模式」，填入学校给的 iSmart 网页版地址（会记住，存在 `ismart_profile.json`）；
+   官方登录页示例：`https://me.ismartlearning.cn/front/login.html`
 2. 工具用**独立的 `user-data-dir`** 启动 Edge/Chrome（不碰你日常浏览器配置），
    并带 `--remote-debugging-port` 打开该地址；
-3. 在弹出的浏览器里完成登录、进到课程页；
-4. 回到本窗口点「刷新课程」→「🧭 抓取页面结构」，按实际 HTML 调整 `courses_js` / `units_js` /
-   `tasks_js` / `submit_steps`。
+3. **在弹出的浏览器里手动登录**（iSmart 走 CAS，带图形验证码，所以必须人工过一次）；
+   登录态存在 `browser-profile/` 里，下次不用重登；
+4. 进到**课程列表页**，回本窗口点「🔄 刷新课程」；
+5. 若仍提示找不到课程 → 点「🔎 页面自检」，把 `dumps/introspect_*.json` 看一眼（或发我），
+   按真实结构改 `courses_js` / `tasks_js`；之后「⏺ 录制流程」录一遍操作即可批量刷。
 
 **A（桌面客户端）**：点「🚀 启动并连接」，工具会在注册表/常见目录里找客户端并带
 `--remote-debugging-port` 启动；也可以自己给快捷方式加该参数后启动，再点「🔐 登录」。
@@ -176,7 +179,9 @@ iSmart 适配器是通过 **Chrome DevTools Protocol 驱动一个真实页面**�
 - **提示「本机无法解密该账号口令」**：`accounts.json` 被拷到别的机器/用户，DPAPI 解不开，重新添加账号即可。
 - **iSmart 连不上**：先看提示。要么装桌面版点「🚀 启动并连接」，要么点「🌐 浏览器模式」填网页版地址。
 - **浏览器模式报「未找到 Edge / Chrome」**：装 Edge 或 Chrome 即可（Win10/11 通常自带 Edge）。
-- **iSmart 抓不到课程/任务**：页面没停在对应列表页，或选择器不适配当前版本 —— 抓页面结构后改配置。
+- **iSmart 抓不到课程/任务**：确认已登录且停在**课程列表页**；再不行点「🔎 页面自检」——
+  它会穿透 iframe / Shadow DOM，导出 data-* 属性统计、按钮文案、输入框与 XHR 接口，
+  比整页 HTML 好定位。把 `dumps/introspect_*.json` 发我即可精确改选择器。
 - **浏览器模式能看到课程，但提交没反应**：说明网页版页面结构不同（或该页的提交依赖客户端能力），
   用「抓取页面结构」看实际 DOM 再改 `submit_steps`；网页版若没有提交入口，这条路走不通，只能等 `ut` 签名方案。
 - **刷时长按钮不见了**：iSmart 不支持刷时长，界面会按平台能力自动隐藏。
