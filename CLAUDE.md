@@ -161,7 +161,11 @@ EnglishLessonHelper-portable.spec  便携单文件打包脚本（onefile，uac_a
 6. `dump_page()` 导出 HTML + PNG 到 `<数据目录>/dumps/`，是校准选择器的唯一入口；
 7. **录制/回放引擎** `core/platforms/ismart_flow.py`：注入点击监听（capture 阶段）→
    记录 `{t, selector, text, href}` → `build_steps()` 转步骤（相邻间隔转 `wait`，
-   `[data-scoid=...]` 占位符化，重复点击合并）→ `FlowRunner.run()` 用 CDP 执行；
+   `[data-scoid=...]` 占位符化，重复点击合并）→ `FlowRunner.run()` 用 CDP 执行。
+   ⚠️ 事件**同时写 localStorage 与内存数组**，并用 `Page.addScriptToEvaluateOnNewDocument`
+   在每次导航后自动重新注入：真实平台点一下就会跳页，只存 `window` 会丢（踩过）；
+   `stop_recording()` 合并两处来源后清空，并 `removeScriptToEvaluateOnNewDocument`。
+   浏览器模式只接受 `http/https`（`normalize_url()`），`data:/file:` 等直接拒绝并清掉旧值。
 8. **刷时长**：`simulate_time()` 先点开任务，注入 15 秒一次的轻量鼠标/滚动活动
    （`KEEPALIVE_START_JS`）并 `Page.bringToFront`，`Event.wait` 可中断，结束移除脚本。
    是否计入由平台决定 —— 本工具只负责让页面「看起来一直有人在看」。
@@ -184,17 +188,22 @@ EnglishLessonHelper-portable.spec  便携单文件打包脚本（onefile，uac_a
 
 ## 测试与验证现状
 
-- `pytest`：127 用例全绿。含 `test_platforms.py`（注册表、契约、iSmart 无客户端时的失败路径、
+- `pytest`：142 用例全绿。含 `test_platforms.py`（注册表、契约、iSmart 无客户端时的失败路径、
   配置读写、步骤引擎成功/失败/未知步骤、dump_page、core.api 兼容层）、`test_ismart_discovery.py`
   （CDP 端口探测、客户端/浏览器定位、带调试参数启动、超时、错误信息可读性、浏览器模式）、
-  `test_ismart_session.py`（sessionId 注入、事件帧跳过、附着重试与放弃）与
-  `test_ismart_flow.py`（事件转步骤、占位符替换、回放失败/兜底、录制存盘、挂时长可中断）。
+  `test_ismart_session.py`（sessionId 注入、事件帧跳过、附着重试与放弃）、
+  `test_ismart_flow.py`（事件转步骤、占位符替换、回放失败/兜底、录制存盘、挂时长可中断）与
+  `test_ismart_recording.py`（地址白名单、导航后重注入的注册/移除、localStorage 合并、截图前切前台）。
 - `ruff check .`：0 问题（`E4/E7/E9/F/I/UP032/B006/B008/B904`，忽略 `E501`）。
 - offscreen 冒烟：主窗口构建、7 列表格渲染、WeLearn 账号显示、正常退出。
 - 打包实测（ASCII 路径下）：产物含 `style.qss`，不含 `accounts.json`，exe 版本资源生效。
-- 便携版实测：`dist\EnglishLessonHelper-portable.exe` 40.40MB；`VersionInfo` 为 6.1.0.0；
+- 便携版实测：`dist\EnglishLessonHelper-portable.exe` 40.41MB；`VersionInfo` 为 6.1.1.0；
   清单为 `asInvoker`（无 UAC）；双击后是 1 个 bootloader + 1 个应用进程，在 **exe 同级** 生成
-  `logs/WeLearnV4_*.log`，日志首行为 `English Lesson Helper V6.1.0 启动`。
+  `logs/WeLearnV4_*.log`，日志首行为 `English Lesson Helper V6.1.1 启动`。
+- 跨页录制实测（本地 HTTP 服务 + Edge）：A 页点击 → 跳转 B 页 → B 页点击，录到
+  `[click [data-scoid="{scoid}"], wait 2004, click #submit]`，跳转前后都不丢。
+- 自动化脚本隔离：`ELH_ISMART_PROFILE` 环境变量可把 iSmart 配置指向临时文件，
+  否则 `open_in_browser()/stop_recording()` 里的 `profile.save()` 会写真实配置（踩过一次）。
 - 录制/回放/挂时长端到端实测（Edge + 本地页面，3 秒时长）：录制到「点任务 + 点提交」两步 →
   换成任务 s2 回放 → 页面标题变成 `submitted-open-s2` → 挂时长实际耗时 ≥2.5s 且页面仍可用。
 - 浏览器模式端到端实测（Edge 156）：带调试端口启动 → 附着 → `document.title` 读取正确 →

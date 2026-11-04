@@ -37,6 +37,7 @@ from core.logger import get_logger
 from core.paths import data_path
 from core.platforms.base import Capability, PlatformClient, PlatformInfo
 from core.platforms.ismart_flow import (
+    RECORDER_BOOTSTRAP_JS,
     RECORDER_START_JS,
     RECORDER_STOP_JS,
     FlowError,
@@ -188,7 +189,9 @@ class ISmartProfile:
 
     @staticmethod
     def path() -> str:
-        return data_path(PROFILE_FILE)
+        # 测试/脚本可用 ELH_ISMART_PROFILE 指向临时文件，避免污染真实配置
+        override = os.environ.get("ELH_ISMART_PROFILE")
+        return override or data_path(PROFILE_FILE)
 
     @classmethod
     def load(cls, path: str = None) -> "ISmartProfile":
@@ -415,6 +418,17 @@ def launch_client(port: int = DEFAULT_PORT, executable: str = None, wait_seconds
     return False, f"客户端已启动，但 {int(wait_seconds)} 秒内调试端口 {port} 未就绪"
 
 
+def normalize_url(url: str) -> str:
+    """只接受 http/https 地址；其余（data:/file:/javascript: 等）返回空串。"""
+    text = (url or "").strip()
+    if not text:
+        return ""
+    lowered = text.lower()
+    if lowered.startswith("http://") or lowered.startswith("https://"):
+        return text
+    return ""
+
+
 def _short_error(exc: BaseException) -> str:
     """把 requests/urllib3 的长堆栈压成一句人话。"""
     text = str(exc)
@@ -533,7 +547,16 @@ class CDPSession:
         return result.get("result", {}).get("value")
 
     def screenshot(self) -> bytes:
-        result = self.send("Page.captureScreenshot", {"format": "png"})
+        # 后台标签页可能被节流导致截图超时：先切到前台，失败再重试一次
+        try:
+            self.send("Page.bringToFront")
+        except ISmartError:
+            pass
+        try:
+            result = self.send("Page.captureScreenshot", {"format": "png"})
+        except ISmartError:
+            time.sleep(0.5)
+            result = self.send("Page.captureScreenshot", {"format": "png", "captureBeyondViewport": False})
         return base64.b64decode(result.get("data", ""))
 
     def close(self) -> None:
@@ -555,6 +578,7 @@ class ISmartClient(PlatformClient):
         self.last_error_code = ""
         self._session: Optional[CDPSession] = None
         self._page: Optional[Dict[str, Any]] = None
+        self._recorder_script_id: Optional[str] = None
 
     # ------------------------------------------------------------ 连接
 
@@ -646,9 +670,17 @@ class ISmartClient(PlatformClient):
 
     def open_in_browser(self, url: str = None, port: int = None, wait_seconds: float = 25.0) -> Tuple[bool, str]:
         """用本机 Edge/Chrome（带调试端口）打开 iSmart 网页版并附着。"""
-        target = (url or self.profile.browser_url or "").strip()
+        raw = (url or self.profile.browser_url or "").strip()
+        target = normalize_url(raw)
         if not target:
             self.last_error_code = ErrCode.CDP
+            if raw:
+                # 历史配置里可能残留 data:/file: 之类的无效值，直接提示重填
+                self.profile.browser_url = ""
+                return False, (
+                    f"这个地址不是网页地址，无法打开：{raw[:60]}\n"
+                    "请填学校给的 iSmart 网页版地址（以 http:// 或 https:// 开头）。"
+                )
             return False, "请先填写 iSmart 网页版地址（学校给的登录页），再点「🌐 浏览器模式」"
 
         browser = find_browser()
@@ -791,33 +823,59 @@ class ISmartClient(PlatformClient):
         return FlowRunner(self._attach())
 
     def start_recording(self) -> bool:
-        """开始录制点击（在客户端/浏览器窗口里手动点一遍流程）。"""
+        """开始录制点击：注入监听器，并登记「导航后自动重新注入」。"""
         try:
-            return str(self._eval(RECORDER_START_JS)) in ("started", "already")
+            session = self._attach()
+            session.send("Page.enable")
+            # 真实平台点一下就会跳转，页面一换 window 状态就没了，所以让它在每次导航后自己回来
+            result = session.send(
+                "Page.addScriptToEvaluateOnNewDocument", {"source": RECORDER_BOOTSTRAP_JS}
+            )
+            self._recorder_script_id = result.get("identifier")
+            state = str(self._eval(RECORDER_START_JS))
+            if state not in ("ready", "started"):
+                logger.warning("录制器注入返回异常状态: %s", state)
+            return True
         except ISmartError as exc:
             self.last_error_code = ErrCode.CDP
             logger.error("开始录制失败: %s", exc)
             return False
 
     def stop_recording(self) -> List[Dict[str, Any]]:
-        """结束录制，把事件转成步骤并写进配（返回生成的步骤）。"""
+        """结束录制，把事件转成步骤并写进配置（返回生成的步骤）。"""
+        events = []
         try:
             events = self._eval(RECORDER_STOP_JS) or []
         except ISmartError as exc:
             self.last_error_code = ErrCode.CDP
             logger.error("结束录制失败: %s", exc)
             return []
+        finally:
+            self._remove_recorder_script()
+
         steps = build_steps(events if isinstance(events, list) else [])
         if not steps:
-            logger.warning("录制结果为空（可能一次都没点）")
+            logger.warning("录制结果为空（可能一次都没点，或页面还没加载完）")
             return []
         self.profile.recorded_steps = steps
         try:
             self.profile.save()
         except OSError as exc:
             logger.warning("保存录制流程失败: %s", exc)
-        logger.info("已录制 %d 个步骤", len(steps))
+        logger.info("已录制 %d 个步骤（原始点击 %d 次）", len(steps), len(events))
         return steps
+
+    def _remove_recorder_script(self) -> None:
+        script_id = getattr(self, "_recorder_script_id", None)
+        self._recorder_script_id = None
+        if not script_id or self._session is None:
+            return
+        try:
+            self._session.send(
+                "Page.removeScriptToEvaluateOnNewDocument", {"identifier": script_id}
+            )
+        except Exception as exc:  # 页面可能已关闭，忽略
+            logger.debug("移除录制脚本失败: %s", exc)
 
     def clear_recording(self) -> None:
         self.profile.recorded_steps = []

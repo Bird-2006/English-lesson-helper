@@ -109,7 +109,15 @@ def test_stop_recording_saves_steps(monkeypatch):
 
 def test_start_recording_reports_state(monkeypatch):
     client = ISmartClient(ISmartProfile(port=9600))
-    monkeypatch.setattr(client, "_eval", lambda expr, await_promise=True: "started")
+
+    class _Session:
+        def send(self, method, params=None):
+            if method == "Page.addScriptToEvaluateOnNewDocument":
+                return {"identifier": "S1"}
+            return {}
+
+    monkeypatch.setattr(client, "_attach", lambda: _Session())
+    monkeypatch.setattr(client, "_eval", lambda expr, await_promise=True: "ready")
     assert client.start_recording() is True
 
 

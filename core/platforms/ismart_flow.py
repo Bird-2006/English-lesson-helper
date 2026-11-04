@@ -20,10 +20,22 @@ from core.logger import get_logger
 
 logger = get_logger("ISmartFlow")
 
-#: 注入点击录制器
-RECORDER_START_JS = r"""
+#: 录制器引导脚本（既是「开始录制」用的内联脚本，也用于导航后自动重新注入）
+#:
+#: 关键点：事件同时写进 ``localStorage`` 与内存数组。真实平台点一下就会跳转/刷新，
+#: ``window`` 上的内存状态会丢，而 ``localStorage``（同源）能留下，因此录制不会被打断。
+RECORDER_BOOTSTRAP_JS = r"""
 (() => {
-  if (window.__ELH_REC) return 'already';
+  const KEY = '__ELH_REC_EVENTS__', START = '__ELH_REC_STARTED__';
+  if (window.__ELH_REC_READY) return 'ready';
+  window.__ELH_REC_READY = true;
+
+  let started = Date.now();
+  try {
+    const saved = Number(localStorage.getItem(START) || 0);
+    if (saved > 0) started = saved; else localStorage.setItem(START, String(started));
+  } catch (e) {}
+
   const cssEscape = (s) => (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/[^\w-]/g, '\\$&');
   const selectorOf = (el) => {
     if (!el || el.nodeType !== 1) return '';
@@ -48,31 +60,59 @@ RECORDER_START_JS = r"""
     }
     return parts.join(' > ');
   };
-  window.__ELH_REC = { events: [], started: Date.now() };
-  window.__ELH_REC.handler = (ev) => {
+
+  const store = (item) => {
+    window.__ELH_REC_MEM = window.__ELH_REC_MEM || [];
+    window.__ELH_REC_MEM.push(item);
+    try {
+      const arr = JSON.parse(localStorage.getItem(KEY) || '[]');
+      arr.push(item);
+      localStorage.setItem(KEY, JSON.stringify(arr.slice(-500)));
+    } catch (e) {}
+  };
+
+  document.addEventListener('click', (ev) => {
     const el = ev.target;
     if (!el || el.nodeType !== 1) return;
     const link = el.closest ? el.closest('a') : null;
-    window.__ELH_REC.events.push({
-      t: Date.now() - window.__ELH_REC.started,
+    store({
+      t: Date.now() - started,
       selector: selectorOf(el),
       text: (el.innerText || '').trim().slice(0, 60),
-      href: link ? link.getAttribute('href') : null
+      href: link ? link.getAttribute('href') : null,
+      url: location.href
     });
-  };
-  document.addEventListener('click', window.__ELH_REC.handler, true);
-  return 'started';
+  }, true);
+
+  return 'ready';
 })()
 """
 
-#: 取出录制结果并卸载监听
+#: 兼容旧名字（开始录制就是执行引导脚本）
+RECORDER_START_JS = RECORDER_BOOTSTRAP_JS
+
+#: 取出录制结果并清理状态（合并 localStorage 与内存数组，按时间+选择器去重）
 RECORDER_STOP_JS = r"""
 (() => {
-  if (!window.__ELH_REC) return [];
-  document.removeEventListener('click', window.__ELH_REC.handler, true);
-  const events = window.__ELH_REC.events.slice();
-  delete window.__ELH_REC;
-  return events;
+  const KEY = '__ELH_REC_EVENTS__', START = '__ELH_REC_STARTED__';
+  let stored = [];
+  try {
+    stored = JSON.parse(localStorage.getItem(KEY) || '[]');
+    localStorage.removeItem(KEY);
+    localStorage.removeItem(START);
+  } catch (e) {}
+  const memory = window.__ELH_REC_MEM || [];
+  window.__ELH_REC_MEM = [];
+  window.__ELH_REC_READY = false;
+  const seen = {}, all = [];
+  stored.concat(memory).forEach((item) => {
+    const key = item.t + '|' + item.selector;
+    if (seen[key]) return;
+    seen[key] = true;
+    all.push(item);
+  });
+  all.sort((a, b) => (a.t || 0) - (b.t || 0));
+  return all;
 })()
 """
 
