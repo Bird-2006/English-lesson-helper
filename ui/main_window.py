@@ -59,6 +59,13 @@ STARTUP_NOTICE = """使用声明：
 感谢您的理解与支持！"""
 
 CHANGELOG = [
+    ("V6.0.4", [
+        "iSmart：新增「🌐 浏览器模式」——没有桌面客户端时，用本机 Edge/Chrome 带调试端口打开网页版",
+        "iSmart：CDP 附着改为浏览器级 WebSocket + Target.attachToTarget(flatten)，"
+        "修掉「握手成功但收不到任何回复」（/json/list 给的 target id 已失效导致 No such target id）",
+        "iSmart：附着失败自动重试一次，避免页面刚导航时偶发失败",
+        "iSmart：浏览器配置放在独立 user-data-dir，不影响日常浏览器",
+    ]),
     ("V6.0.3", [
         "iSmart：新增「🚀 启动并连接」——自动定位客户端安装路径，带 --remote-debugging-port 启动并等待端口就绪",
         "iSmart：自动探测调试端口（9222/9223/9224/9229/8315），客户端换端口也能连上",

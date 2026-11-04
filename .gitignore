@@ -29,6 +29,7 @@ accounts.txt
 task_progress.json
 ismart_profile.json
 dumps/
+browser-profile/
 logs/
 *.log
 

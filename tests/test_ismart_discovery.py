@@ -151,7 +151,8 @@ def test_login_message_is_actionable_and_short(monkeypatch):
     ok, message = client.login("u", "p")
     assert ok is False
     assert "已尝试端口" in message
-    assert "未在本机找到 iSmart 桌面客户端" in message
+    assert "未找到 iSmart 桌面客户端" in message
+    assert "浏览器模式" in message
     assert "urllib3" not in message and "NewConnectionError" not in message
     assert len(message) < 400
     assert client.last_error_code == "cdp"
@@ -192,4 +193,123 @@ def test_launch_and_connect_success_attaches(monkeypatch, tmp_path):
     assert ok is True
     assert attached["ok"] is True
     assert client.profile.port == 9555
+
+
+# ---------------------------------------------------------------- 浏览器模式
+
+def test_find_browser_returns_existing_executable(tmp_path, monkeypatch):
+    browser = tmp_path / "msedge.exe"
+    browser.write_text("stub", encoding="utf-8")
+    monkeypatch.setattr(ismart, "BROWSER_CANDIDATES", (str(browser),))
+    assert ismart.find_browser() == str(browser)
+
+
+def test_find_browser_returns_none_when_absent(tmp_path, monkeypatch):
+    monkeypatch.setattr(ismart, "BROWSER_CANDIDATES", (str(tmp_path / "missing.exe"),))
+    assert ismart.find_browser() is None
+
+
+def test_launch_browser_uses_debug_port_and_isolated_profile(tmp_path, monkeypatch):
+    browser = tmp_path / "msedge.exe"
+    browser.write_text("stub", encoding="utf-8")
+    captured = {}
+    monkeypatch.setattr(
+        ismart.subprocess, "Popen", lambda args, **kwargs: captured.setdefault("args", args)
+    )
+    monkeypatch.setattr(ismart, "probe_cdp_port", lambda port, timeout=1.0: {"Browser": "x"})
+
+    profile_dir = tmp_path / "prof"
+    ok, message = ismart.launch_browser(
+        "https://example.test/ismart",
+        9444,
+        profile_dir=str(profile_dir),
+        executable=str(browser),
+        wait_seconds=2,
+    )
+    assert ok is True
+    args = captured["args"]
+    assert args[0] == str(browser)
+    assert "--remote-debugging-port=9444" in args
+    assert any(arg.startswith("--user-data-dir=") for arg in args)
+    assert args[-1] == "https://example.test/ismart"
+    assert profile_dir.is_dir()
+    assert "9444" in message
+
+
+def test_launch_browser_without_browser(monkeypatch):
+    monkeypatch.setattr(ismart, "find_browser", lambda: None)
+    ok, message = ismart.launch_browser("https://example.test", 9222, wait_seconds=1)
+    assert ok is False
+    assert "Edge" in message
+
+
+def test_launch_browser_reports_timeout(tmp_path, monkeypatch):
+    browser = tmp_path / "msedge.exe"
+    browser.write_text("stub", encoding="utf-8")
+    monkeypatch.setattr(ismart.subprocess, "Popen", lambda *a, **k: None)
+    monkeypatch.setattr(ismart, "probe_cdp_port", lambda port, timeout=1.0: None)
+    ok, message = ismart.launch_browser(
+        "https://example.test", 9222, profile_dir=str(tmp_path / "p"), executable=str(browser), wait_seconds=0.3
+    )
+    assert ok is False
+    assert "未就绪" in message
+
+
+def test_open_in_browser_requires_url():
+    client = ISmartClient(ISmartProfile(port=1))
+    ok, message = client.open_in_browser()
+    assert ok is False
+    assert "网页版地址" in message
+    assert client.last_error_code == "cdp"
+
+
+def test_open_in_browser_success_saves_profile(tmp_path, monkeypatch):
+    browser = tmp_path / "msedge.exe"
+    browser.write_text("stub", encoding="utf-8")
+    monkeypatch.setattr(ismart, "find_browser", lambda: str(browser))
+    monkeypatch.setattr(ismart, "launch_browser", lambda url, port, **kw: (True, "已启动"))
+
+    client = ISmartClient(ISmartProfile(port=9222))
+    monkeypatch.setattr(client, "_attach", lambda: True)
+    monkeypatch.setattr(client.profile, "save", lambda *a, **k: None)
+
+    ok, message = client.open_in_browser("https://example.test/ismart")
+    assert ok is True
+    assert client.profile.browser_url == "https://example.test/ismart"
+    assert client.profile.port == client.profile.browser_port
     assert "已连接" in message
+
+
+def test_launch_and_connect_falls_back_to_browser(monkeypatch):
+    monkeypatch.setattr(ismart, "find_client_executable", lambda: None)
+    client = ISmartClient(ISmartProfile(port=1, browser_url="https://example.test/ismart"))
+    called = {}
+
+    def fake_open(url=None, port=None, wait_seconds=25.0):
+        called["url"] = url
+        return True, "ok"
+
+    monkeypatch.setattr(client, "open_in_browser", fake_open)
+    ok, _ = client.launch_and_connect()
+    assert ok is True
+    assert called["url"] == "https://example.test/ismart"
+
+
+def test_launch_and_connect_message_mentions_browser_route(monkeypatch):
+    monkeypatch.setattr(ismart, "find_client_executable", lambda: None)
+    client = ISmartClient(ISmartProfile(port=1))
+    ok, message = client.launch_and_connect()
+    assert ok is False
+    assert "浏览器模式" in message
+
+
+def test_profile_persists_browser_url(tmp_path):
+    path = tmp_path / "ismart_profile.json"
+    profile = ISmartProfile()
+    profile.browser_url = "https://example.test/ismart"
+    profile.browser_port = 9444
+    profile.save(str(path))
+
+    loaded = ISmartProfile.load(str(path))
+    assert loaded.browser_url == "https://example.test/ismart"
+    assert loaded.browser_port == 9444

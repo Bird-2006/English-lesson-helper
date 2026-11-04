@@ -485,25 +485,33 @@ class TimeStudyThread(_BaseThread):
 
 
 class LaunchClientThread(_BaseThread):
-    """带调试端口启动本地客户端（iSmart），耗时操作放后台避免卡界面。"""
+    """启动本地客户端 / 浏览器（iSmart），耗时操作放后台避免卡界面。
+
+    ``mode``:
+      - ``"client"``：定位并带调试端口启动桌面客户端；
+      - ``"browser"``：用本机 Edge/Chrome 带调试端口打开 ``url``。
+    """
 
     result_ready = pyqtSignal(bool, str)
 
-    def __init__(self, client, port: int = None):
+    def __init__(self, client, port: int = None, mode: str = "client", url: str = None):
         super().__init__()
         self.client = client
         self.port = port
+        self.mode = mode
+        self.url = url
 
     def run(self):
-        launcher = getattr(self.client, "launch_and_connect", None)
+        method_name = "open_in_browser" if self.mode == "browser" else "launch_and_connect"
+        launcher = getattr(self.client, method_name, None)
         if launcher is None:
-            self.result_ready.emit(False, "当前平台不支持自动启动客户端")
+            self.result_ready.emit(False, "当前平台不支持该启动方式")
             return
         try:
-            ok, message = launcher(self.port) if self.port else launcher()
+            ok, message = launcher(self.url) if self.mode == "browser" else launcher(self.port)
         except Exception as exc:
-            self.logger.exception("启动客户端失败")
-            ok, message = False, f"启动客户端失败: {exc}"
+            self.logger.exception("启动失败（%s）", self.mode)
+            ok, message = False, f"启动失败: {exc}"
         self.result_ready.emit(ok, message)
 
 

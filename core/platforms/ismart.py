@@ -173,6 +173,9 @@ class ISmartProfile:
     tasks_js: str = TASKS_JS
     expect_ok_js: str = EXPECT_OK_JS
     submit_steps: List[Dict[str, Any]] = field(default_factory=lambda: list(DEFAULT_SUBMIT_STEPS))
+    #: 浏览器模式：iSmart 网页版地址（没有桌面客户端时走这条路）
+    browser_url: str = ""
+    browser_port: int = DEFAULT_PORT
 
     @staticmethod
     def path() -> str:
@@ -224,6 +227,70 @@ CLIENT_SEARCH_PATTERNS: Tuple[str, ...] = (
 )
 
 _EXE_HINTS = ("ismart.exe", "ismartclient.exe", "ismartlearning.exe")
+
+#: 可用作 CDP 宿主的浏览器（Windows 自带 Edge，通常无需另外安装）
+BROWSER_CANDIDATES: Tuple[str, ...] = (
+    r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe",
+    r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe",
+    r"%LOCALAPPDATA%\Microsoft\Edge\Application\msedge.exe",
+    r"%ProgramFiles%\Google\Chrome\Application\chrome.exe",
+    r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe",
+    r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe",
+)
+
+BROWSER_PROFILE_DIR = "browser-profile"
+
+
+def find_browser() -> Optional[str]:
+    """定位 Edge / Chrome 可执行文件（用作 CDP 宿主）。"""
+    for pattern in BROWSER_CANDIDATES:
+        candidate = os.path.expandvars(pattern)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def launch_browser(
+    url: str,
+    port: int = DEFAULT_PORT,
+    profile_dir: str = None,
+    executable: str = None,
+    wait_seconds: float = 25.0,
+) -> Tuple[bool, str]:
+    """带着调试端口启动浏览器并打开 ``url``，等端口就绪。
+
+    使用独立 ``--user-data-dir``：既不会污染用户日常浏览器配置，
+    也是 Chrome 允许开启远程调试的前提。
+    """
+    browser = executable or find_browser()
+    if not browser:
+        return False, "未找到 Edge / Chrome，无法使用浏览器模式"
+
+    profile_dir = profile_dir or os.path.join(os.path.dirname(ISmartProfile.path()), BROWSER_PROFILE_DIR)
+    try:
+        os.makedirs(profile_dir, exist_ok=True)
+    except OSError as exc:
+        return False, f"创建浏览器配置目录失败: {exc}"
+
+    args = [
+        browser,
+        f"--remote-debugging-port={port}",
+        f"--user-data-dir={profile_dir}",
+        "--no-first-run",
+        "--no-default-browser-check",
+        url,
+    ]
+    try:
+        subprocess.Popen(args, close_fds=True)
+    except Exception as exc:
+        return False, f"启动浏览器失败: {exc}"
+
+    deadline = time.monotonic() + wait_seconds
+    while time.monotonic() < deadline:
+        if probe_cdp_port(port):
+            return True, f"浏览器已启动，调试端口 {port} 就绪"
+        time.sleep(0.5)
+    return False, f"浏览器已启动，但 {int(wait_seconds)} 秒内调试端口 {port} 未就绪"
 
 
 def probe_cdp_port(port: int, timeout: float = 1.0) -> Optional[Dict[str, Any]]:
@@ -361,7 +428,12 @@ def discover_pages(port: int = DEFAULT_PORT, timeout: float = 3.0) -> List[Dict[
 
 
 class CDPSession:
-    """最小可用的 CDP 会话（只用到 Runtime/Page 两个域）。"""
+    """CDP 会话。
+
+    附着方式用的是 **浏览器级 WebSocket + ``Target.attachToTarget(flatten=True)``**：
+    目标 id 通过 ``Target.getTargets`` 实时枚举，而不是 ``/json/list`` 里可能已失效的 id
+    （实测中带上旧 id 握手会得到 ``No such target id``，进而表现为「连上了但没有任何回复」）。
+    """
 
     def __init__(self, ws_url: str, timeout: float = COMMAND_TIMEOUT):
         try:
@@ -370,16 +442,55 @@ class CDPSession:
             raise ISmartError("缺少依赖 websocket-client，请执行 pip install -r requirements.txt") from exc
 
         self._next_id = 0
-        try:
-            self._ws = websocket.create_connection(ws_url, timeout=timeout)
-        except Exception as exc:
-            raise ISmartError(f"连接页面失败: {exc}") from exc
+        self.session_id: Optional[str] = None
         self.timeout = timeout
+        try:
+            self._ws = websocket.create_connection(ws_url, timeout=timeout, suppress_origin=True)
+        except Exception as exc:
+            raise ISmartError(f"连接浏览器调试端口失败: {exc}") from exc
+
+    @classmethod
+    def attach_to_browser(cls, port: int, host_keyword: str = "") -> "CDPSession":
+        """连到浏览器级端点，挑选页面 target 并建立 flattened session。"""
+        try:
+            version = requests.get(f"http://127.0.0.1:{port}/json/version", timeout=3).json()
+            ws_url = version["webSocketDebuggerUrl"]
+        except Exception as exc:
+            raise ISmartError(f"无法读取浏览器调试信息（{_short_error(exc)}）") from exc
+
+        session = cls(ws_url)
+        targets = session.send("Target.getTargets").get("targetInfos", [])
+        pages = [info for info in targets if info.get("type") == "page"]
+        keyword = (host_keyword or "").lower()
+        chosen = None
+        for info in pages:
+            if not keyword or keyword in (info.get("url") or "").lower():
+                chosen = info
+                break
+        if chosen is None and pages:
+            chosen = pages[0]
+        if chosen is None:
+            session.close()
+            raise ISmartError("浏览器里没有可附着的页面，请先打开课程页")
+
+        attached = session.send(
+            "Target.attachToTarget", {"targetId": chosen["targetId"], "flatten": True}
+        )
+        session.session_id = attached.get("sessionId")
+        if not session.session_id:
+            session.close()
+            raise ISmartError("附着页面失败（没有拿到 sessionId）")
+        session.target_url = chosen.get("url") or ""
+        session.target_title = chosen.get("title") or ""
+        logger.info("已附着页面 target=%s url=%s", chosen.get("targetId"), session.target_url)
+        return session
 
     def send(self, method: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
         self._next_id += 1
         request_id = self._next_id
         payload = {"id": request_id, "method": method, "params": params or {}}
+        if self.session_id:
+            payload["sessionId"] = self.session_id
         try:
             self._ws.send(json.dumps(payload))
             deadline = time.monotonic() + self.timeout
@@ -450,35 +561,39 @@ class ISmartClient(PlatformClient):
                 port = discovered
         self.profile.port = port
 
-        pages = discover_pages(port)
-        keyword = (self.profile.host_keyword or "").lower()
-        candidate = None
-        for page in pages:
-            url = (page.get("url") or "").lower()
-            if not keyword or keyword in url:
-                candidate = page
-                break
-        if candidate is None:
-            candidate = pages[0] if pages else None
-        if candidate is None:
-            raise ISmartError("调试端口上没有可附着的页面，请先在 iSmart 客户端里打开课程页")
-
-        self._page = candidate
-        self._session = CDPSession(candidate["webSocketDebuggerUrl"])
-        self._session.send("Runtime.enable")
-        logger.info("已附着 iSmart 页面: %s", candidate.get("title") or candidate.get("url"))
-        return self._session
+        # 附着失败重试一次：页面可能刚导航完，target 还在切换
+        last_error: Optional[ISmartError] = None
+        for attempt in range(2):
+            try:
+                session = CDPSession.attach_to_browser(port, self.profile.host_keyword)
+                session.send("Runtime.enable")
+                self._session = session
+                self._page = {
+                    "url": getattr(session, "target_url", ""),
+                    "title": getattr(session, "target_title", ""),
+                }
+                logger.info("已附着 iSmart 页面: %s", self._page.get("title") or self._page.get("url"))
+                return session
+            except ISmartError as exc:
+                last_error = exc
+                logger.warning("附着失败（第 %d 次）: %s", attempt + 1, exc)
+                if attempt == 0:
+                    time.sleep(0.4)
+        raise last_error or ISmartError("附着页面失败")
 
     def launch_and_connect(self, port: int = None, wait_seconds: float = 25.0) -> Tuple[bool, str]:
-        """带调试端口启动本地客户端并连接（供界面「启动并连接」按钮调用）。"""
+        """优先启动桌面客户端；没有客户端时若有网页版地址则改用浏览器模式。"""
         target_port = int(port or self.profile.port)
         exe = find_client_executable()
         if not exe:
+            if self.profile.browser_url:
+                logger.info("未找到桌面客户端，改用浏览器模式: %s", self.profile.browser_url)
+                return self.open_in_browser(self.profile.browser_url, target_port, wait_seconds)
             self.last_error_code = ErrCode.CDP
             return False, (
-                "未找到 iSmart 桌面客户端。\n"
-                "本适配器通过 Chrome DevTools Protocol 驱动官方客户端，必须有桌面版；"
-                "只有网页版时无法使用此平台（需要先逆向 ut 签名并直连接口）。"
+                "未找到 iSmart 桌面客户端，也没有配置网页版地址。\n"
+                "① 安装桌面版后点「🚀 启动并连接」；"
+                "② 或点「🌐 浏览器模式」，填入学校给的 iSmart 网页版地址，用本机 Edge/Chrome 打开。"
             )
         logger.info("启动 iSmart 客户端: %s（端口 %s）", exe, target_port)
         ok, message = launch_client(target_port, exe, wait_seconds)
@@ -503,13 +618,56 @@ class ISmartClient(PlatformClient):
         executable = find_client_executable()
         if executable:
             tail = f"已找到客户端：{executable}\n点「🚀 启动并连接」可自动带调试参数启动。"
+        elif self.profile.browser_url:
+            tail = (
+                "未找到 iSmart 桌面客户端，但已配置网页版地址：\n"
+                f"{self.profile.browser_url}\n"
+                "点「🌐 浏览器模式」会用系统 Edge/Chrome 带着调试端口打开它。"
+            )
         else:
             tail = (
-                "未在本机找到 iSmart 桌面客户端。\n"
-                "本适配器依赖桌面客户端（用 CDP 驱动页面），只有网页版时用不了；"
-                "装好桌面版后点「🚀 启动并连接」。"
+                "未找到 iSmart 桌面客户端。\n"
+                "两条路：① 安装桌面版后点「🚀 启动并连接」；"
+                "② 点「🌐 浏览器模式」，填入学校给的 iSmart 网页版地址，用本机 Edge/Chrome 打开。"
             )
         return f"{reason}\n已尝试端口：{tried}\n{tail}"
+
+    def _browser_profile_dir(self) -> str:
+        return os.path.join(os.path.dirname(ISmartProfile.path()), BROWSER_PROFILE_DIR)
+
+    def open_in_browser(self, url: str = None, port: int = None, wait_seconds: float = 25.0) -> Tuple[bool, str]:
+        """用本机 Edge/Chrome（带调试端口）打开 iSmart 网页版并附着。"""
+        target = (url or self.profile.browser_url or "").strip()
+        if not target:
+            self.last_error_code = ErrCode.CDP
+            return False, "请先填写 iSmart 网页版地址（学校给的登录页），再点「🌐 浏览器模式」"
+
+        browser = find_browser()
+        if not browser:
+            self.last_error_code = ErrCode.CDP
+            return False, "未找到 Edge / Chrome，无法使用浏览器模式"
+
+        target_port = int(port or self.profile.browser_port or DEFAULT_PORT)
+        logger.info("浏览器模式启动: %s -> %s（端口 %s）", browser, target, target_port)
+        ok, message = launch_browser(
+            target,
+            target_port,
+            profile_dir=self._browser_profile_dir(),
+            executable=browser,
+            wait_seconds=wait_seconds,
+        )
+        if not ok:
+            self.last_error_code = ErrCode.CDP
+            return False, message
+
+        self.profile.browser_url = target
+        self.profile.browser_port = target_port
+        self.profile.port = target_port
+        try:
+            self.profile.save()
+        except OSError as exc:
+            logger.warning("保存 iSmart 配置失败: %s", exc)
+        return self.login("", "")
 
     def close(self) -> None:
         if self._session is not None:

@@ -186,6 +186,11 @@ class AccountDetailDialog(QDialog):
             self.launch_btn.clicked.connect(self.launch_client)
             mode_row.addWidget(self.launch_btn)
 
+            self.browser_btn = QPushButton("🌐 浏览器模式")
+            self.browser_btn.setToolTip("没有桌面客户端时，用本机 Edge/Chrome 带调试端口打开网页版")
+            self.browser_btn.clicked.connect(self.open_in_browser)
+            mode_row.addWidget(self.browser_btn)
+
             self.dump_btn = QPushButton("🧭 抓取页面结构")
             self.dump_btn.setToolTip("导出当前客户端页面的 HTML 与截图，用于校准选择器")
             self.dump_btn.clicked.connect(self.dump_page)
@@ -537,17 +542,53 @@ class AccountDetailDialog(QDialog):
             return
         if hasattr(self, "launch_btn"):
             self.launch_btn.setEnabled(False)
+        if hasattr(self, "browser_btn"):
+            self.browser_btn.setEnabled(False)
         self.log("正在启动客户端（带调试端口）...")
         self.launch_thread = workers.LaunchClientThread(self.client)
         self.launch_thread.result_ready.connect(self.on_launch_result)
         self.launch_thread.start()
 
-    def on_launch_result(self, ok: bool, message: str):
+    def open_in_browser(self):
+        """没有桌面客户端时：用本机 Edge/Chrome 打开 iSmart 网页版并附着。"""
+        if getattr(self.client, "open_in_browser", None) is None:
+            self.log("当前平台不支持浏览器模式")
+            return
+        if self.launch_thread is not None and self.launch_thread.isRunning():
+            return
+
+        from PyQt5.QtWidgets import QInputDialog
+
+        current = getattr(getattr(self.client, "profile", None), "browser_url", "")
+        url, accepted = QInputDialog.getText(
+            self,
+            "浏览器模式",
+            "填入 iSmart 网页版地址（学校给的登录页）：\n会用本机 Edge/Chrome 带调试端口打开，登录后回到本窗口继续。",
+            text=current,
+        )
+        if not accepted:
+            return
+        url = url.strip()
+        if not url:
+            return
+
         if hasattr(self, "launch_btn"):
-            self.launch_btn.setEnabled(True)
+            self.launch_btn.setEnabled(False)
+        if hasattr(self, "browser_btn"):
+            self.browser_btn.setEnabled(False)
+        self.log(f"正在用浏览器打开: {url}")
+        self.launch_thread = workers.LaunchClientThread(self.client, mode="browser", url=url)
+        self.launch_thread.result_ready.connect(self.on_launch_result)
+        self.launch_thread.start()
+
+    def on_launch_result(self, ok: bool, message: str):
+        for attribute in ("launch_btn", "browser_btn"):
+            button = getattr(self, attribute, None)
+            if button is not None:
+                button.setEnabled(True)
         self.log(("✅ " if ok else "❌ ") + message)
         if not ok:
-            QMessageBox.warning(self, "无法连接客户端", message)
+            QMessageBox.warning(self, "无法连接", message)
             return
         self.is_logged_in = True
         self.login_btn.setText("✅ 已登录")
