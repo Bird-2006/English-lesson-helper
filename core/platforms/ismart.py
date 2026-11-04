@@ -72,24 +72,35 @@ class ISmartError(Exception):
 #: 课程列表：先按 data-* 属性找卡片，再退回链接扫描
 COURSES_JS = r"""
 (() => {
-  const out = [], seen = new Set();
-  const add = (id, text) => {
-    if (!id || !text) return;
-    const key = String(id);
-    if (seen.has(key)) return;
-    seen.add(key);
-    out.push({ cid: key, name: text.trim().slice(0, 120), per: "" });
-  };
-  document.querySelectorAll('[data-courseid],[data-id],a[href*="course"],div.course-item,li.course-item')
-    .forEach(el => {
-      const ds = el.dataset || {};
-      const href = (el.getAttribute && el.getAttribute('href')) || '';
-      const m = href.match(/courseI[dD]=([^&]+)/);
-      const id = ds.courseid || ds.id || (m && m[1]);
-      const text = (el.innerText || '').split('\n')[0];
-      add(id, text);
-    });
-  return out.slice(0, 200);
+  // iSmart 学生中心（me.ismartlearning.cn/center/student/index.html）的课程卡片没有
+  // data-courseid，只有一个「进入课程」按钮 + 标题 + 主讲。因此按「按钮 → 向上找卡片 → 取标题」
+  // 的方式识别，cid 用 card:<序号>（同一页面内稳定，点击时按同样顺序再扫一遍）。
+  const LABELS = ['进入课程', '继续学习', '开始学习', '进入学习'];
+  const isLabel = (t) => LABELS.some((l) => t === l || t.indexOf(l) === 0);
+  const visible = (el) => !!(el.getBoundingClientRect && el.getBoundingClientRect().width > 0);
+
+  const buttons = Array.from(document.querySelectorAll('a,button,div,span'))
+    .filter((el) => { const t = (el.innerText || '').trim(); return t && isLabel(t) && visible(el); });
+  // 去重：父元素与子元素都是按钮时只留最内层
+  const primary = buttons.filter((el) => !buttons.some((other) => other !== el && el.contains(other)));
+
+  const out = [];
+  primary.forEach((btn, index) => {
+    const label = (btn.innerText || '').trim();
+    if (LABELS.indexOf(label) !== 0) return;   // 只认最外层「进入课程」
+    let card = btn.parentElement, depth = 0, title = '';
+    while (card && depth < 5) {
+      const txt = (card.innerText || '').trim();
+      if (txt.length > label.length + 2 && txt.length < 400) { title = txt; break; }
+      card = card.parentElement; depth += 1;
+    }
+    const lines = title.split('\n').map((s) => s.trim()).filter(Boolean)
+      .filter((s) => !isLabel(s) && !/^[¥￥]?\d+(\.\d+)?\s*元?$/.test(s) && !/查看详情/.test(s));
+    const name = (lines[0] || ('课程 ' + (index + 1))).slice(0, 60);
+    const teacher = (lines.find((s) => /老师|教师|主讲/.test(s)) || '').slice(0, 40);
+    out.push({ cid: 'card:' + index, name: name, per: teacher });
+  });
+  return out.slice(0, 100);
 })()
 """
 
@@ -110,21 +121,45 @@ UNITS_JS = r"""
 })()
 """
 
-#: 任务（SCO）列表
+#: 任务（SCO）列表：优先 data-*；学生中心/课程页没有 data-* 时按可见文案识别
 TASKS_JS = r"""
 (() => {
-  const rows = [...document.querySelectorAll('[data-scoid],[data-taskid],li.task-item,div.task-item')];
-  return rows.map((el, i) => {
-    const ds = el.dataset || {};
-    const text = (el.innerText || '').trim();
-    const finished = ds.completed === 'true' || /已完成/.test(text);
-    return {
-      id: String(ds.scoid || ds.taskid || i),
-      location: (text.split('\n')[0] || ('任务 ' + (i + 1))).trim().slice(0, 120),
+  const out = [], seen = new Set();
+  const pushTask = (id, label, finished) => {
+    const key = String(id);
+    if (!id || seen.has(key)) return;
+    seen.add(key);
+    out.push({
+      id: key,
+      location: (label || ('任务 ' + (out.length + 1))).trim().slice(0, 120),
       isvisible: 'true',
       iscomplete: finished ? '已完成' : '未完成'
-    };
+    });
+  };
+
+  [...document.querySelectorAll('[data-scoid],[data-taskid],li.task-item,div.task-item')]
+    .forEach((el, i) => {
+      const ds = el.dataset || {};
+      const text = (el.innerText || '').trim();
+      pushTask(String(ds.scoid || ds.taskid || 'task:' + i), text.split('\n')[0],
+               ds.completed === 'true' || /已完成/.test(text));
+    });
+  if (out.length) return out;
+
+  // 没有 data-* 的页面：按「测验/活动/问答/作业/练习/单元」这类可见条目识别
+  const LABELS = ['测验', '活动', '问答', '作业', '练习', '单元', 'Unit', 'Chapter', '第'];
+  const nodes = Array.from(document.querySelectorAll('a,button,div,span,li'))
+    .filter((el) => {
+      const t = (el.innerText || '').trim();
+      return t && t.length < 80 && LABELS.some((l) => t.indexOf(l) === 0 || t.indexOf(l) >= 0) &&
+             el.getBoundingClientRect().width > 0;
+    });
+  const primary = nodes.filter((el) => !nodes.some((other) => other !== el && el.contains(other)));
+  primary.forEach((el, i) => {
+    const text = (el.innerText || '').trim();
+    pushTask('task:' + i, text.split('\n')[0], /已完成|已完成学习|100%/.test(text));
   });
+  return out.slice(0, 200);
 })()
 """
 
@@ -147,8 +182,28 @@ DEFAULT_SUBMIT_STEPS: List[Dict[str, Any]] = [
 
 CLICK_TASK_JS = r"""
 (() => {
-  const target = %(scoid)s;
-  const nodes = [...document.querySelectorAll('[data-scoid],[data-taskid],li,div')];
+  const target = String(%(scoid)s);
+  // 「card:序号」= 学生中心的课程卡片；「task:序号」= 课程页里的任务条目。
+  // 两类都按「按钮文案 + 出现顺序」定位，因为页面没有稳定 data-id（实测学生中心如此）。
+  const m = target.match(/^(card|task):(\d+)$/);
+  if (m) {
+    const labels = m[1] === 'card'
+      ? ['进入课程', '继续学习', '开始学习', '进入学习']
+      : ['测验', '活动', '问答', '作业', '练习', '单元', 'Unit', 'Chapter'];
+    const hit = (t) => labels.some((l) => t === l || t.indexOf(l) === 0 || t.indexOf(l) >= 0);
+    const nodes = Array.from(document.querySelectorAll('a,button,div,span'))
+      .filter((el) => {
+        const t = (el.innerText || '').trim();
+        return t && t.length < 60 && hit(t) && el.getBoundingClientRect().width > 0;
+      });
+    const primary = nodes.filter((el) => !nodes.some((other) => other !== el && el.contains(other)));
+    const el = primary[parseInt(m[2], 10)];
+    if (!el) return false;
+    el.scrollIntoView({ block: 'center' });
+    el.click();
+    return true;
+  }
+  const nodes = [...document.querySelectorAll('[data-scoid],[data-taskid]')];
   for (const el of nodes) {
     const ds = el.dataset || {};
     if (String(ds.scoid || ds.taskid || '') === target) { el.click(); return true; }
@@ -581,6 +636,8 @@ class ISmartClient(PlatformClient):
         self._session: Optional[CDPSession] = None
         self._page: Optional[Dict[str, Any]] = None
         self._recorder_script_id: Optional[str] = None
+        #: 课程列表页地址（进入课程后用它回到列表）
+        self._list_url = ""
 
     # ------------------------------------------------------------ 连接
 
@@ -779,6 +836,11 @@ class ISmartClient(PlatformClient):
             self.last_error_code = ErrCode.PARSE
             return False, [], str(exc)
         if courses:
+            # 记下列表页地址：进课程之后要用它回来
+            try:
+                self._list_url = str(self._eval("location.href") or "")
+            except ISmartError:
+                self._list_url = ""
             return True, courses, "获取课程成功"
 
         self.last_error_code = ErrCode.PARSE
@@ -798,6 +860,45 @@ class ISmartClient(PlatformClient):
             % (login.get("url") or "未知"),
         )
 
+    # ------------------------------------------------------------ 进/出课程
+
+    def click_course(self, cid, wait_seconds: float = 12.0) -> bool:
+        """点开第 N 张课程卡片（cid = ``card:N``），并等页面切换。"""
+        if not str(cid).startswith("card:"):
+            return bool(self._eval(CLICK_TASK_JS % {"scoid": json.dumps(str(cid))}))
+        before = str(self._eval("location.href") or "")
+        if not self._eval(CLICK_TASK_JS % {"scoid": json.dumps(str(cid))}):
+            return False
+        return bool(self._wait_url_change(before, wait_seconds))
+
+    def _wait_url_change(self, before: str, timeout: float = 12.0) -> str:
+        """等 URL 变化（点击后多为整页跳转或 SPA 路由切换）。"""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            time.sleep(0.4)
+            try:
+                current = str(self._eval("location.href") or "")
+            except ISmartError:
+                return ""
+            if current and current != before:
+                logger.info("页面已切换: %s", current)
+                return current
+        logger.warning("点了之后 %ss 内页面没有变化", int(timeout))
+        return ""
+
+    def return_to_list(self) -> bool:
+        """回到课程列表页（用记录的地址，不依赖浏览器历史栈）。"""
+        if not self._list_url:
+            return False
+        try:
+            self._attach().send("Page.navigate", {"url": self._list_url})
+        except ISmartError as exc:
+            logger.warning("返回课程列表失败: %s", exc)
+            return False
+        time.sleep(2.0)  # 等列表渲染
+        logger.info("已返回课程列表: %s", self._list_url)
+        return True
+
     def get_course_info(self, cid) -> Tuple[bool, Optional[Dict], str]:
         try:
             data = self._eval(self.profile.units_js) or {}
@@ -807,8 +908,10 @@ class ISmartClient(PlatformClient):
 
         units = data.get("units") or []
         if not units:
-            self.last_error_code = ErrCode.PARSE
-            return False, None, "页面里没找到单元元素，请先打开该课程目录页，或调整 units_js"
+            # 学生中心/课程页没有 data-unitid 时退化为「整门课程当一个单元」：
+            # 这样刷作业/刷时长仍能按课程卡片跑（具体走位交给录制流程）
+            logger.info("页面里没有单元元素，按整门课程处理: %s", cid)
+            units = [{"id": str(cid), "name": "整门课程", "visible": "true"}]
         return (
             True,
             {
@@ -827,18 +930,27 @@ class ISmartClient(PlatformClient):
             return False, [], str(exc)
         tasks = [t for t in tasks if isinstance(t, dict) and t.get("id")]
         if not tasks:
-            self.last_error_code = ErrCode.PARSE
-            return False, [], "页面里没找到任务元素，请打开该单元的任务列表，或调整 tasks_js"
+            # 识别不到任务条目时，把「这张课程卡片本身」当任务：
+            # 进课程 + 录制流程（或挂时长）照样能跑
+            logger.info("页面里没有任务元素，按课程卡片处理: %s", cid)
+            tasks = [{"id": str(cid), "location": "整门课程", "isvisible": "true", "iscomplete": "未完成"}]
         return True, tasks, "Success"
 
     # ------------------------------------------------------------ 提交流程
 
     def _run_steps(self, scoid) -> List[str]:
+        card_mode = str(scoid).startswith("card:")
+        if card_mode:
+            # 课程卡片模式：先把课程点开，后续步骤在课程页里执行
+            if not self.click_course(scoid):
+                raise ISmartError(f"没能点开课程卡片 {scoid}")
+
         # 录制过流程就优先用录制的（真实页面走位比默认启发式可靠得多）
         if self.profile.recorded_steps:
+            task_id = "" if card_mode else scoid
             try:
                 return self._runner().run(
-                    self.profile.recorded_steps, {"scoid": scoid, "task": scoid}
+                    self.profile.recorded_steps, {"scoid": task_id, "task": task_id}
                 )
             except FlowError as exc:
                 raise ISmartError(str(exc)) from exc
@@ -847,6 +959,8 @@ class ISmartClient(PlatformClient):
         for step in self.profile.submit_steps:
             kind = step.get("kind", "")
             if kind == "click_task":
+                if card_mode:
+                    continue  # 已经进课程了，别再点一次卡片
                 target = str(step.get("scoid", "{scoid}")).replace("{scoid}", str(scoid))
                 ok = self._eval(CLICK_TASK_JS % {"scoid": json.dumps(target)})
                 if not ok:
@@ -873,6 +987,7 @@ class ISmartClient(PlatformClient):
         return logs
 
     def submit_course_progress(self, cid, uid, classid, scoid, accuracy) -> Tuple[int, int, int, int]:
+        card_mode = str(scoid).startswith("card:")
         try:
             for line in self._run_steps(scoid):
                 logger.info(line)
@@ -880,6 +995,9 @@ class ISmartClient(PlatformClient):
             self.last_error_code = ErrCode.PARSE
             logger.error("iSmart 提交流程失败: %s", exc)
             return 0, 1, 0, 1
+        finally:
+            if card_mode:
+                self.return_to_list()
         return 1, 0, 0, 1  # iSmart 没有 WeLearn 的「双通道」概念，第二路恒记为未走
 
     # ------------------------------------------------------------ 录制 / 回放
@@ -1015,6 +1133,9 @@ class ISmartClient(PlatformClient):
             except ISmartError as exc:
                 logger.debug("移除保持活跃脚本失败: %s", exc)
         logger.info("挂时长完成：任务 %s 累计 %ds", scoid, int(time.monotonic() - started))
+        # 卡片模式下页面已经跳到课程里了，挂完回列表，方便下一张卡片继续
+        if str(scoid).startswith("card:"):
+            self.return_to_list()
         return True
 
     # ------------------------------------------------------------ 调试辅助

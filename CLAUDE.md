@@ -4,7 +4,7 @@
 
 ## 项目概述
 
-**English Lesson Helper V6.2.0**（包名 `english-lesson-helper`）：Windows 桌面 GUI，把两个英语网课平台
+**English Lesson Helper V6.3.0**（包名 `english-lesson-helper`）：Windows 桌面 GUI，把两个英语网课平台
 收敛到同一套界面与任务流程：
 
 | 平台 | 适配器 | 接入方式 | 能力 |
@@ -23,7 +23,7 @@
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe main.py
 
-# 测试（151 个用例；Qt 相关走 offscreen，conftest.py 已配好插件路径）
+# 测试（164 个用例；Qt 相关走 offscreen，conftest.py 已配好插件路径）
 .\.venv\Scripts\python.exe -m pytest
 
 # 静态检查
@@ -77,7 +77,7 @@ ui/
   network_fix_dialog.py    网络工具箱
 tests/                     单元测试 + offscreen 冒烟
 style.qss                  全局样式表
-version_info.txt           exe 版本资源（6.2.0.0），由 .spec 的 version= 引用
+version_info.txt           exe 版本资源（6.3.0.0），由 .spec 的 version= 引用
 EnglishLessonHelper.spec   PyInstaller 打包脚本（onedir 文件夹版）
 EnglishLessonHelper-portable.spec  便携单文件打包脚本（onefile，uac_admin=False）
 ```
@@ -185,9 +185,18 @@ EnglishLessonHelper-portable.spec  便携单文件打包脚本（onefile，uac_a
 - 另有 `bp-captcha` 与手机验证码输入框；按钮文案「登录」；
 - 链接：首页 `http://www.ismartlearning.cn`、忘记密码 `front/index.html?forgotPassword`、
   注册 `front/index.html?regist`；
+- 登录后进入**学生中心**：`https://me.ismartlearning.cn/center/student/index.html?studentId=1`
+  （`title=学生中心`，顶栏 MyCourse）。课程区结构：
+  - 每门课一张卡片：封面图 + 标题（如「周三5-6节」）+ 「主讲: 徐辉 老师」+ 绿色按钮「进入课程」；
+  - 右上还有「测验 / 活动 / 问答」三个入口图标，以及「当前课程｜往期课程」切换、「+ 选课」；
+  - 下方是 HotCourse 商品区（先声英语学生用书1/2、53元、查看详情）——**不要把这些当成课程**；
+  - 卡片**没有 `data-courseid`**，所以 `COURSES_JS` 改为「找『进入课程』按钮 → 向上找卡片取标题」，
+    cid 记为 `card:<序号>`（同页内稳定）。
 - 因为要验证码，正确姿势是**用户在浏览器窗口里登录一次**，会话存在
   `<数据目录>/browser-profile` 里，下次不用重登；工具只负责登录之后的页面操作。
-- 内页结构尚需用户登录后跑一次「🔎 页面自检」才能确定 `courses_js` / `tasks_js`。
+- **卡片级闭环**：`click_course("card:N")` 点开课程并等 URL 变化 →
+  执行录制流程/默认提交步骤 → `return_to_list()` 用 `_list_url` 回到列表；
+  页面没有单元/任务元素时 `get_course_info`/`get_sco_leaves` 退化为「整门课程」，不再中断。
 
 ## 状态回传与断点续跑
 
@@ -204,19 +213,25 @@ EnglishLessonHelper-portable.spec  便携单文件打包脚本（onefile，uac_a
 
 ## 测试与验证现状
 
-- `pytest`：151 用例全绿。含 `test_platforms.py`（注册表、契约、iSmart 无客户端时的失败路径、
+- `pytest`：164 用例全绿。含 `test_platforms.py`（注册表、契约、iSmart 无客户端时的失败路径、
   配置读写、步骤引擎成功/失败/未知步骤、dump_page、core.api 兼容层）、`test_ismart_discovery.py`
   （CDP 端口探测、客户端/浏览器定位、带调试参数启动、超时、错误信息可读性、浏览器模式）、
   `test_ismart_session.py`（sessionId 注入、事件帧跳过、附着重试与放弃）、
   `test_ismart_flow.py`（事件转步骤、占位符替换、回放失败/兜底、录制存盘、挂时长可中断）、
   `test_ismart_recording.py`（地址白名单、导航后重注入的注册/移除、localStorage 合并、截图前切前台）与
-  `test_ismart_introspect.py`（登录页识别、渲染重试、自检落盘、提示措辞）。
+  `test_ismart_introspect.py`（登录页识别、渲染重试、自检落盘、提示措辞）、
+  `test_ismart_courses.py`（学生中心卡片识别、进/出课程、缺 DOM 时退化、card 模式跳过重复点击）。
+  ⚠️ `conftest.py` 的 autouse fixture 会禁用 `CDPSession.attach_to_browser`：
+  用户可能正开着浏览器模式的 Edge（9222 且已登录），测试绝不能点到真实页面。
+  需要真实浏览器的验证脚本要放在 `tests/` 之外单独跑。
 - `ruff check .`：0 问题（`E4/E7/E9/F/I/UP032/B006/B008/B904`，忽略 `E501`）。
 - offscreen 冒烟：主窗口构建、7 列表格渲染、WeLearn 账号显示、正常退出。
 - 打包实测（ASCII 路径下）：产物含 `style.qss`，不含 `accounts.json`，exe 版本资源生效。
-- 便携版实测：`dist\EnglishLessonHelper-portable.exe` 40.41MB；`VersionInfo` 为 6.2.0.0；
+- 便携版实测：`dist\EnglishLessonHelper-portable.exe` 40.41MB；`VersionInfo` 为 6.3.0.0；
   清单为 `asInvoker`（无 UAC）；双击后是 1 个 bootloader + 1 个应用进程，在 **exe 同级** 生成
-  `logs/WeLearnV4_*.log`，日志首行为 `English Lesson Helper V6.2.0 启动`。
+  `logs/WeLearnV4_*.log`，日志首行为 `English Lesson Helper V6.3.0 启动`。
+- 学生中心闭环实测（仿页面 + Edge）：识别到 `[card:0 周三5-6节/主讲徐辉, card:1 周五7-8节]` →
+  进课程 → 提交成功 → 自动回到 `/center`；挂时长 3 秒同样回到列表（`CENTER E2E OK`）。
 - 真实站点自检实测（Edge + `me.ismartlearning.cn/front/login.html`）：拿到 11 个输入框
   （含 `username`/`password`/`captcha`/`lt`/`execution`/`_eventId`）、按钮「登录」、6 条链接；
   首轮在页面渲染前读会得到全空，故 `page_introspect()` 最多重试 6 次 ×0.8s。

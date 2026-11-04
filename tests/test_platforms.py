@@ -83,7 +83,21 @@ def test_platform_names_are_unique():
 
 # ---------------------------------------------------------------- iSmart：无客户端
 
-def test_ismart_login_reports_missing_debug_port():
+def _no_browser(monkeypatch):
+    """把 CDP 入口全部封死：测试绝不能连上本机真实浏览器（否则会点到用户页面）。"""
+    import core.platforms.ismart as ismart_module
+
+    monkeypatch.setattr(ismart_module, "find_cdp_port", lambda *a, **k: None)
+    monkeypatch.setattr(ismart_module, "probe_cdp_port", lambda *a, **k: None)
+
+    def _boom(*args, **kwargs):
+        raise ismart_module.ISmartError("无法读取浏览器调试信息（端口未开放）")
+
+    monkeypatch.setattr(ismart_module.CDPSession, "attach_to_browser", staticmethod(_boom))
+
+
+def test_ismart_login_reports_missing_debug_port(monkeypatch):
+    _no_browser(monkeypatch)
     client = ISmartClient(ISmartProfile(port=1, host_keyword="ismart"))
     ok, message = client.login("user", "pass")
     assert ok is False
@@ -94,8 +108,9 @@ def test_ismart_login_reports_missing_debug_port():
     client.close()
 
 
-def test_ismart_simulate_time_reports_cdp_error_without_page():
+def test_ismart_simulate_time_reports_cdp_error_without_page(monkeypatch):
     """没有可附着的页面时，挂时长要干净地失败并标 cdp 错误码。"""
+    _no_browser(monkeypatch)
     client = ISmartClient(ISmartProfile(port=1))
     assert client.simulate_time(1, "2", "3", 1) is False
     assert client.last_error_code == "cdp"
