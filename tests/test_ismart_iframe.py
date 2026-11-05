@@ -1,5 +1,4 @@
 """同源 iframe 相关：包装器不能踩 ASI、按钮识别要覆盖 input、回列表要拨 iframe。"""
-import json
 
 import pytest
 
@@ -9,6 +8,7 @@ from core.platforms.ismart import (
     CLICK_TEXT_JS,
     ISmartClient,
     ISmartProfile,
+    click_task_script,
     wrap_for_content,
 )
 
@@ -45,9 +45,10 @@ def test_click_text_js_covers_input_and_value():
 
 
 def test_click_task_js_formats_card_target():
-    rendered = CLICK_TASK_JS % {"scoid": json.dumps("card:0")}
+    rendered = click_task_script("card:0")
     assert '"card:0"' in rendered
     assert "%(" not in rendered
+    assert "进入课程" in rendered
 
 
 class _Recorder:
@@ -153,4 +154,4 @@ def test_remember_list_url_records_both_documents(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("cid", ["card:0", "task:3"])
 def test_click_task_targets_are_prefixed_ids(cid):
-    assert CLICK_TASK_JS % {"scoid": json.dumps(cid)}
+    assert click_task_script(cid)

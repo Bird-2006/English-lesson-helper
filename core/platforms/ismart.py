@@ -129,6 +129,13 @@ UNITS_JS = r"""
 })()
 """
 
+#: 任务候选的文案关键词：TASKS_JS（识别）与 CLICK_TASK_JS（点击）必须共用同一份，
+#: 否则两边过滤出的元素序号会错位 → 出现「识别到 3 个，第 3 个点不到」（实测踩过）。
+TASK_LABELS = [
+    "测验", "活动", "问答", "作业", "练习", "单元", "Unit", "Chapter", "第",
+    "视频", "课件", "听力", "阅读", "写作", "翻译", "任务", "开始学习", "继续学习",
+]
+
 #: 任务（SCO）列表：优先 data-*；学生中心/课程页没有 data-* 时按可见文案识别
 TASKS_JS = r"""
 (() => {
@@ -154,18 +161,57 @@ TASKS_JS = r"""
     });
   if (out.length) return out;
 
-  // 没有 data-* 的页面：按「测验/活动/问答/作业/练习/单元」这类可见条目识别
-  const LABELS = ['测验', '活动', '问答', '作业', '练习', '单元', 'Unit', 'Chapter', '第'];
-  const nodes = Array.from(document.querySelectorAll('a,button,div,span,li'))
+  // 没有 data-* 的页面：按可见条目识别（含 input 按钮、视频/课件/作业这类标签）
+  // 标签表由 %(labels)s 注入，与 CLICK_TASK_JS 共用同一份（避免序号错位）
+  const LABELS = %(labels)s;
+  const labelOf = (el) => ((el.innerText || el.value || el.getAttribute('title') ||
+    el.getAttribute('aria-label') || '') + '').trim();
+  const clickable = Array.from(document.querySelectorAll('a,button,div,span,li,input,[role=button]'))
     .filter((el) => {
-      const t = (el.innerText || '').trim();
-      return t && t.length < 80 && LABELS.some((l) => t.indexOf(l) === 0 || t.indexOf(l) >= 0) &&
+      const t = labelOf(el);
+      return t && t.length < 80 && LABELS.some((l) => t.indexOf(l) >= 0) &&
              el.getBoundingClientRect().width > 0;
     });
-  const primary = nodes.filter((el) => !nodes.some((other) => other !== el && el.contains(other)));
+  const primary = clickable.filter((el) => !clickable.some((other) => other !== el && el.contains(other)));
+
+  // 给每个候选算一个 CSS 选择器，方便回放时精确定位
+  const cssEscape = (s) => (window.CSS && CSS.escape) ? CSS.escape(s) : String(s).replace(/[^\w-]/g, '\\$&');
+  const selectorOf = (el) => {
+    if (!el || el.nodeType !== 1) return '';
+    if (el.id) return '#' + cssEscape(el.id);
+    for (const attr of ['data-scoid', 'data-taskid', 'data-id']) {
+      const v = el.getAttribute && el.getAttribute(attr);
+      if (v) return '[' + attr + '="' + v + '"]';
+    }
+    const parts = [];
+    let node = el, depth = 0;
+    while (node && node.nodeType === 1 && depth < 4) {
+      let part = node.tagName.toLowerCase();
+      const cls = (typeof node.className === 'string' ? node.className : '').trim().split(/\s+/).filter(Boolean).slice(0, 2);
+      if (cls.length) part += cls.map((c) => '.' + cssEscape(c)).join('');
+      const parent = node.parentElement;
+      if (parent) {
+        const same = Array.from(parent.children).filter((c) => c.tagName === node.tagName);
+        if (same.length > 1) part += ':nth-of-type(' + (same.indexOf(node) + 1) + ')';
+      }
+      parts.unshift(part);
+      node = parent; depth += 1;
+    }
+    return parts.join(' > ');
+  };
+
   primary.forEach((el, i) => {
-    const text = (el.innerText || '').trim();
-    pushTask('task:' + i, text.split('\n')[0], /已完成|已完成学习|100%/.test(text));
+    const text = labelOf(el);
+    const key = 'task:' + i;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({
+      id: key,
+      location: text.split('\n')[0].slice(0, 120),
+      selector: selectorOf(el),
+      isvisible: 'true',
+      iscomplete: /已完成|已完成学习|100%/.test(text) ? '已完成' : '未完成'
+    });
   });
   return out.slice(0, 200);
 })()
@@ -179,11 +225,31 @@ EXPECT_OK_JS = r"""
 })()
 """
 
-#: 默认提交流程：点开任务 → 等渲染 → 点「提交」→ 等回包 → 判定
+#: 提交按钮的候选文案：不同页面叫法不同，按顺序试（录制流程可覆盖）
+SUBMIT_LABELS: Tuple[str, ...] = ("提交", "保存", "完成", "交卷", "确定", "下一题", "继续")
+
+_TASK_LABELS_JSON = json.dumps(TASK_LABELS, ensure_ascii=False)
+
+
+def fill_task_labels(script: str) -> str:
+    """把 ``%(labels)s`` 换成任务标签表。
+
+    用字符串替换而不是 ``%`` 格式化：TASKS_JS 里有 ``/100%/`` 这种字面量百分号，
+    走 ``%`` 格式化会直接抛 ValueError。
+    """
+    return script.replace("%(labels)s", _TASK_LABELS_JSON)
+
+
+def click_task_script(target: str) -> str:
+    """生成点击某个任务的脚本（card:序号 / task:序号 / data-* id 都支持）。"""
+    return fill_task_labels(CLICK_TASK_JS).replace("%(scoid)s", json.dumps(str(target)))
+
+
+#: 默认提交流程：点开任务 → 等渲染 → 依次试提交文案 → 等回包 → 判定
 DEFAULT_SUBMIT_STEPS: List[Dict[str, Any]] = [
     {"kind": "click_task", "scoid": "{scoid}"},
     {"kind": "wait_ms", "ms": 1200},
-    {"kind": "click_text", "text": "提交"},
+    {"kind": "click_submit"},
     {"kind": "wait_ms", "ms": 1500},
     {"kind": "expect_ok"},
 ]
@@ -197,7 +263,7 @@ CLICK_TASK_JS = r"""
   if (m) {
     const labels = m[1] === 'card'
       ? ['进入课程', '继续学习', '开始学习', '进入学习']
-      : ['测验', '活动', '问答', '作业', '练习', '单元', 'Unit', 'Chapter'];
+      : %(labels)s;   // 与 TASKS_JS 共用同一份标签表，保证序号一致
     const hit = (t) => labels.some((l) => t === l || t.indexOf(l) === 0 || t.indexOf(l) >= 0);
     // 必须包含 input：学生中心的「进入课程」实测是 <input type=button value=...>，
     // innerText 为空，只能读 value / title / aria-label
@@ -480,7 +546,16 @@ def launch_client(port: int = DEFAULT_PORT, executable: str = None, wait_seconds
         return False, "未找到 iSmart 客户端可执行文件，请先安装桌面客户端"
 
     try:
-        subprocess.Popen([exe, f"--remote-debugging-port={port}"], close_fds=True)
+        # 新版 Chromium 只在来源可信时才接受 WS 连接，客户端内部页面互连需要这个开关
+        subprocess.Popen(
+            [
+                exe,
+                f"--remote-debugging-port={port}",
+                "--remote-allow-origins=*",
+                "--remote-debugging-address=127.0.0.1",
+            ],
+            close_fds=True,
+        )
     except Exception as exc:
         return False, f"启动客户端失败: {exc}"
 
@@ -648,6 +723,14 @@ class CDPSession:
             raise ISmartError("附着页面失败（没有拿到 sessionId）")
         session.target_url = chosen.get("url") or ""
         session.target_title = chosen.get("title") or ""
+        # 把端点里所有 target 打出来：换客户端/换平台时，这行日志能立刻看出暴露了什么
+        for info in targets:
+            logger.info(
+                "  target[%s] %s %s",
+                info.get("type"),
+                info.get("title") or "-",
+                (info.get("url") or "-")[:120],
+            )
         logger.info("已附着页面 target=%s url=%s", chosen.get("targetId"), session.target_url)
         return session
 
@@ -1046,6 +1129,45 @@ class ISmartClient(PlatformClient):
             courses.append({"cid": str(cid), "name": label[:70], "per": ""})
         return courses
 
+    # ------------------------------------------------------------ 识别任务
+
+    def discover_tasks(self) -> Dict[str, Any]:
+        """识别当前页上的任务条目（进课程后点「🔍 识别任务」用）。
+
+        不需要预先录制：直接把候选条目、文案与 CSS 选择器列出来，存 dumps/tasks_*.json。
+        """
+        self._wait_content()
+        try:
+            raw = self._eval(fill_task_labels(self.profile.tasks_js)) or []
+        except ISmartError as exc:
+            self.last_error_code = ErrCode.PARSE
+            logger.error("识别任务失败: %s", exc)
+            return {"count": 0, "tasks": [], "error": str(exc)}
+
+        tasks = [t for t in raw if isinstance(t, dict) and t.get("id")] if isinstance(raw, list) else []
+        result = {
+            "captured_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "page": self._list_url,
+            "count": len(tasks),
+            "tasks": tasks[:100],
+        }
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        target_dir = os.path.join(os.path.dirname(ISmartProfile.path()), DUMP_DIR)
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+            from core.atomic import write_text_atomic
+
+            path = os.path.join(target_dir, f"tasks_{stamp}.json")
+            write_text_atomic(path, json.dumps(result, ensure_ascii=False, indent=2))
+            result["saved_to"] = path
+        except OSError as exc:
+            logger.warning("保存任务清单失败: %s", exc)
+
+        logger.info("识别到 %d 个任务候选（页面 %s）", len(tasks), self._list_url)
+        for task in tasks[:20]:
+            logger.info("  %s | %s | %s", task.get("id"), task.get("location"), task.get("selector", ""))
+        return result
+
     # ------------------------------------------------------------ 接口调用
 
     def cookies(self) -> Dict[str, str]:
@@ -1102,9 +1224,9 @@ class ISmartClient(PlatformClient):
     def click_course(self, cid, wait_seconds: float = 12.0) -> bool:
         """点开第 N 张课程卡片（cid = ``card:N``），并等页面切换。"""
         if not str(cid).startswith("card:"):
-            return bool(self._eval(CLICK_TASK_JS % {"scoid": json.dumps(str(cid))}))
+            return bool(self._eval(click_task_script(cid)))
         before = str(self._eval("location.href") or "")
-        if not self._eval(CLICK_TASK_JS % {"scoid": json.dumps(str(cid))}):
+        if not self._eval(click_task_script(cid)):
             return False
         return bool(self._wait_url_change(before, wait_seconds))
 
@@ -1173,7 +1295,7 @@ class ISmartClient(PlatformClient):
     def get_sco_leaves(self, cid, uid, classid, unit_idx) -> Tuple[bool, List, str]:
         self._wait_content()
         try:
-            raw_tasks = self._eval(self.profile.tasks_js)
+            raw_tasks = self._eval(fill_task_labels(self.profile.tasks_js))
         except ISmartError as exc:
             self.last_error_code = ErrCode.PARSE
             return False, [], str(exc)
@@ -1215,10 +1337,23 @@ class ISmartClient(PlatformClient):
                 if card_mode:
                     continue  # 已经进课程了，别再点一次卡片
                 target = str(step.get("scoid", "{scoid}")).replace("{scoid}", str(scoid))
-                ok = self._eval(CLICK_TASK_JS % {"scoid": json.dumps(target)})
+                ok = self._eval(click_task_script(target))
                 if not ok:
                     raise ISmartError(f"没找到任务 {target} 对应的元素")
                 logs.append(f"已点击任务 {target}")
+            elif kind == "click_submit":
+                # 不同页面把提交按钮叫不同名字，按顺序试，命中即用
+                clicked = None
+                for label in SUBMIT_LABELS:
+                    if self._eval(CLICK_TEXT_JS % {"text": json.dumps(label)}):
+                        clicked = label
+                        break
+                if not clicked:
+                    raise ISmartError(
+                        "没找到提交按钮（试过：" + "、".join(SUBMIT_LABELS) + "）；"
+                        "请用「⏺ 录制流程」录一遍提交动作"
+                    )
+                logs.append(f"已点击「{clicked}」")
             elif kind == "click_text":
                 text = str(step.get("text", "提交"))
                 ok = self._eval(CLICK_TEXT_JS % {"text": json.dumps(text)})
@@ -1347,7 +1482,7 @@ class ISmartClient(PlatformClient):
         learning_time = max(1, int(learning_time))
         try:
             if scoid:
-                ok = self._eval(CLICK_TASK_JS % {"scoid": json.dumps(str(scoid))})
+                ok = self._eval(click_task_script(scoid))
                 if not ok:
                     logger.warning("没找到任务 %s 的元素，直接在当前页面挂时长", scoid)
                 else:

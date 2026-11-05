@@ -211,6 +211,11 @@ class AccountDetailDialog(QDialog):
             self.capture_btn.setToolTip("抓一段时间的网络请求（含 POST body），弄清真正的业务接口")
             self.capture_btn.clicked.connect(self.capture_api)
             mode_row.addWidget(self.capture_btn)
+
+            self.tasks_btn = QPushButton("🔍 识别任务")
+            self.tasks_btn.setToolTip("进课程后点这个，列出页面上的任务条目（不需要先录制）")
+            self.tasks_btn.clicked.connect(self.discover_tasks)
+            mode_row.addWidget(self.tasks_btn)
         mode_row.addStretch()
         settings_layout.addLayout(mode_row)
 
@@ -615,6 +620,38 @@ class AccountDetailDialog(QDialog):
         self.refresh_courses_btn.setEnabled(True)
         self.update_status(AccountStatus.LOGGED_IN, immediate=True)
         self.refresh_courses()
+
+    def discover_tasks(self):
+        """识别任务：进课程后列出页面上的任务条目，验证选择器是否可用。"""
+        discover = getattr(self.client, "discover_tasks", None)
+        if discover is None:
+            self.log("当前平台不支持识别任务")
+            return
+        try:
+            data = discover()
+        except Exception as exc:
+            self.log(f"❌ 识别任务失败: {exc}")
+            logger.error("识别任务失败: %s", exc)
+            return
+
+        tasks = data.get("tasks") or []
+        self.log(f"🔍 识别到 {len(tasks)} 个任务候选（页面：{data.get('page') or '未知'}）")
+        if not tasks:
+            QMessageBox.information(
+                self,
+                "没识别到任务",
+                "当前页面上没找到任务条目。\n"
+                "请确认浏览器里已经进入课程、停在单元/任务列表页，再点一次。",
+            )
+            return
+
+        lines = [f"共 {len(tasks)} 个："]
+        for task in tasks[:12]:
+            lines.append(f"· {task.get('location')}  [{task.get('id')}]")
+        if data.get("saved_to"):
+            lines.append("")
+            lines.append(f"完整清单：{data['saved_to']}")
+        QMessageBox.information(self, "识别任务", "\n".join(lines))
 
     def capture_api(self):
         """抓接口：抓 N 秒网络请求，用于确认课程/任务/提交的真实接口。"""
