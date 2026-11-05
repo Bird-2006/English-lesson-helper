@@ -113,7 +113,11 @@ def test_launch_client_passes_debug_flag(tmp_path, monkeypatch):
 
     ok, message = launch_client(9333, str(exe), wait_seconds=2)
     assert ok is True
-    assert captured["args"] == [str(exe), "--remote-debugging-port=9333"]
+    args = captured["args"]
+    assert args[0] == str(exe)
+    assert "--remote-debugging-port=9333" in args
+    # 新版 Chromium 需要放开来源限制，客户端内部页面才能互连
+    assert "--remote-allow-origins=*" in args
     assert "9333" in message
 
 
