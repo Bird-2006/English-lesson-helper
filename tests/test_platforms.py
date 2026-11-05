@@ -226,6 +226,7 @@ def test_get_courses_normalizes_stub_output(monkeypatch):
     client = _client_with_stub(profile, [[{"cid": "11", "name": "Book A", "per": ""}]])
     # 现在 get_courses 会先尝试 JSON 接口；这里直接封掉取 Cookie，确保走 DOM 分支
     monkeypatch.setattr(client, "cookies", lambda: {})
+    monkeypatch.setattr(client, "_wait_content", lambda *a, **k: True)
     ok, courses, message = client.get_courses()
     assert ok is True
     assert courses[0]["cid"] == "11"

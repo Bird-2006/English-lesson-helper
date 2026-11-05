@@ -106,9 +106,12 @@ def test_return_to_list_without_url(monkeypatch, tmp_path):
     assert client.return_to_list() is False
 
 
-def test_return_to_list_navigates(monkeypatch, tmp_path):
-    client = _client(_Script({}), monkeypatch, tmp_path)
-    client._list_url = "https://x/center"
+def test_return_to_list_navigates_iframe(monkeypatch, tmp_path):
+    """内容在 iframe 里：回列表是改 iframe location，不是整页重载。"""
+    recorder = _Script({})
+    client = _client(recorder, monkeypatch, tmp_path)
+    client._list_url = "https://x/center/courses.html"
+    client._outer_url = "https://x/center/index.html"
     sent = []
 
     class _Session:
@@ -118,8 +121,8 @@ def test_return_to_list_navigates(monkeypatch, tmp_path):
 
     monkeypatch.setattr(client, "_attach", lambda: _Session())
     assert client.return_to_list() is True
-    assert sent[0][0] == "Page.navigate"
-    assert sent[0][1]["url"] == "https://x/center"
+    assert any("courses.html" in call for call in recorder.calls)
+    assert sent == []  # 不该调用 Page.navigate
 
 
 def test_run_steps_card_mode_skips_click_task(monkeypatch, tmp_path):

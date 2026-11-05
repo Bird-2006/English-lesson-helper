@@ -5,6 +5,8 @@ import sys
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# 内容等待（等 iframe 渲染）在测试里没必要真等 8 秒
+os.environ.setdefault("ELH_CONTENT_TIMEOUT", "0.1")
 
 # 部分 PyQt5 wheel 不会自动定位 platform 插件目录，显式指定一次
 if "QT_QPA_PLATFORM_PLUGIN_PATH" not in os.environ:

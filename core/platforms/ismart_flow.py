@@ -157,13 +157,15 @@ CLICK_SELECTOR_JS = r"""
 })()
 """
 
-#: 按可见文本点击（录制的选择器太长时的兜底）
+#: 按可见文本点击（录制的选择器太长时的兜底；也读 input 的 value）
 CLICK_TEXT_EXACT_JS = r"""
 (() => {
   const want = %(text)s;
-  const nodes = Array.from(document.querySelectorAll('button,a,div,span,li,td'));
-  let hit = nodes.find(el => (el.innerText || '').trim() === want);
-  if (!hit) hit = nodes.find(el => (el.innerText || '').trim().includes(want) && (el.innerText || '').trim().length < 30);
+  const labelOf = (el) => ((el.innerText || el.value || el.getAttribute('title') ||
+    el.getAttribute('aria-label') || '') + '').trim();
+  const nodes = Array.from(document.querySelectorAll('button,a,div,span,li,input,[role=button]'));
+  let hit = nodes.find((el) => labelOf(el) === want);
+  if (!hit) hit = nodes.find((el) => { const t = labelOf(el); return t.indexOf(want) >= 0 && t.length < 30; });
   if (!hit) return false;
   hit.scrollIntoView && hit.scrollIntoView({ block: 'center' });
   hit.click();

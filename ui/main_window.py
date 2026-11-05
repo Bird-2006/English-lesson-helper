@@ -59,6 +59,13 @@ STARTUP_NOTICE = """使用声明：
 感谢您的理解与支持！"""
 
 CHANGELOG = [
+    ("V6.4.2", [
+        "修复 iSmart 课程一直识别不到：学生中心的内容在同源 iframe（#ifra → courses.html）里，"
+        "现在所有页面脚本自动切到该 iframe 执行，并先等内容渲染",
+        "修复包装器 return 被 JS 自动分号插入（ASI）截断，脚本永远返回 undefined 的问题",
+        "按钮识别补 input[type=button] 的 value / title / aria-label（「进入课程」实测就是这种元素）",
+        "刷作业闭环打通：逐张课程卡片 → 进课程 → 执行录制流程/默认提交 → 拨回列表 → 下一张",
+    ]),
     ("V6.4.1", [
         "修复「📡 抓接口」报 'bool' object has no attribute 'is_set'（stop_requested 是属性不是 Event）",
         "课程列表不再把主讲显示成「进度」：主讲并入课程名（周三5-6节（徐辉 老师）），"

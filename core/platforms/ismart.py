@@ -199,9 +199,13 @@ CLICK_TASK_JS = r"""
       ? ['进入课程', '继续学习', '开始学习', '进入学习']
       : ['测验', '活动', '问答', '作业', '练习', '单元', 'Unit', 'Chapter'];
     const hit = (t) => labels.some((l) => t === l || t.indexOf(l) === 0 || t.indexOf(l) >= 0);
-    const nodes = Array.from(document.querySelectorAll('a,button,div,span'))
+    // 必须包含 input：学生中心的「进入课程」实测是 <input type=button value=...>，
+    // innerText 为空，只能读 value / title / aria-label
+    const labelOf = (el) => ((el.innerText || el.value || el.getAttribute('title') ||
+      el.getAttribute('aria-label') || '') + '').trim();
+    const nodes = Array.from(document.querySelectorAll('a,button,div,span,input,[role=button]'))
       .filter((el) => {
-        const t = (el.innerText || '').trim();
+        const t = labelOf(el);
         return t && t.length < 60 && hit(t) && el.getBoundingClientRect().width > 0;
       });
     const primary = nodes.filter((el) => !nodes.some((other) => other !== el && el.contains(other)));
@@ -223,11 +227,16 @@ CLICK_TASK_JS = r"""
 CLICK_TEXT_JS = r"""
 (() => {
   const want = %(text)s;
-  const nodes = [...document.querySelectorAll('button,a,div,span,li')];
-  const hit = nodes.find(el => (el.innerText || '').trim() === want);
-  if (hit) { hit.click(); return true; }
-  const soft = nodes.find(el => (el.innerText || '').trim().includes(want) && (el.innerText || '').length < 20);
-  if (soft) { soft.click(); return true; }
+  const labelOf = (el) => ((el.innerText || el.value || el.getAttribute('title') ||
+    el.getAttribute('aria-label') || '') + '').trim();
+  const nodes = [...document.querySelectorAll('button,a,div,span,li,input,[role=button]')];
+  const hit = nodes.find(el => labelOf(el) === want);
+  if (hit) { hit.scrollIntoView && hit.scrollIntoView({ block: 'center' }); hit.click(); return true; }
+  const soft = nodes.find(el => {
+    const t = labelOf(el);
+    return t.indexOf(want) >= 0 && t.length < 20;
+  });
+  if (soft) { soft.scrollIntoView && soft.scrollIntoView({ block: 'center' }); soft.click(); return true; }
   return false;
 })()
 """
@@ -544,6 +553,46 @@ def discover_pages(port: int = DEFAULT_PORT, timeout: float = 3.0) -> List[Dict[
     return [page for page in pages if page.get("type") == "page" and page.get("webSocketDebuggerUrl")]
 
 
+#: 学生中心把内容放在同源 iframe 里（``#ifra`` → ``courses.html``）。
+#: 所有页面脚本都先切到「有内容的那个文档」再执行，否则在顶层文档里什么都找不到（实测踩过）。
+CONTENT_SCRIPT_WRAPPER = r"""
+(() => {
+  let doc = document;
+  const candidates = [
+    '#ifra',
+    'iframe[name=indexIframe]',
+    '#index-iframe iframe',
+    'iframe[src*="courses"]',
+    'iframe[src*="course"]'
+  ];
+  for (const sel of candidates) {
+    let frame = null;
+    try { frame = document.querySelector(sel); } catch (e) { frame = null; }
+    if (!frame) continue;
+    let inner = null;
+    try { inner = frame.contentDocument; } catch (e) { inner = null; }  // 跨域会抛
+    if (!inner || !inner.body) continue;
+    if (((inner.body.innerText || '') + '').trim().length > 0) { doc = inner; break; }
+    if (doc === document) doc = inner;  // 还没渲染好也先用它，交给重试逻辑
+  }
+  const win = doc.defaultView || window;
+  const loc = doc.location || location;
+  return (function (document, window, location) {
+    return (%s);
+  })(doc, win, loc);
+})()
+"""
+
+
+def wrap_for_content(script: str) -> str:
+    """把页面脚本包进「优先在内容 iframe 里执行」的包装器。
+
+    注意 ``return (...)`` 的括号：脚本本身以换行开头，不括号会被 JS 的自动分号插入
+    （ASI）截断成 ``return;``，函数直接返回 undefined —— 实测踩过，排查了很久。
+    """
+    return CONTENT_SCRIPT_WRAPPER % (script.strip(),)
+
+
 class CDPSession:
     """CDP 会话。
 
@@ -704,6 +753,8 @@ class ISmartClient(PlatformClient):
         self._recorder_script_id: Optional[str] = None
         #: 课程列表页地址（进入课程后用它回到列表）
         self._list_url = ""
+        #: 外壳页面地址（iframe 回退失败时整页重载用）
+        self._outer_url = ""
 
     # ------------------------------------------------------------ 连接
 
@@ -844,6 +895,15 @@ class ISmartClient(PlatformClient):
     # ------------------------------------------------------------ 脚本执行
 
     def _eval(self, expression: str) -> Any:
+        """执行页面脚本（自动切到内容 iframe）。
+
+        顶层文档只是外壳，课程/任务都在 ``#ifra`` 里；直接在最外层跑什么都读不到。
+        个别调用方需要顶层（例如判断登录页），用 ``_eval_top``。
+        """
+        return self._attach().evaluate(wrap_for_content(expression))
+
+    def _eval_top(self, expression: str) -> Any:
+        """在顶层文档执行（不切 iframe）。"""
         return self._attach().evaluate(expression)
 
     # ------------------------------------------------------------ 页面自检
@@ -895,6 +955,7 @@ class ISmartClient(PlatformClient):
         return data
 
     def get_courses(self) -> Tuple[bool, List[Dict], str]:
+        self._wait_content()
         # 优先走接口：学生中心是 XHR 渲染的，扒 DOM 容易受渲染时机/框架影响
         ok, payload, err = self.api_get(COURSE_LIST_PATH, {"status": 1, "pager.pageSize": 50})
         if ok:
@@ -938,11 +999,38 @@ class ISmartClient(PlatformClient):
             % (login.get("url") or "未知"),
         )
 
+    def _wait_content(self, timeout: float = None) -> bool:
+        """等内容 iframe 渲染出可见文本（学生中心是 XHR 渲染，读太早会全空）。
+
+        超时可用 ``ELH_CONTENT_TIMEOUT`` 覆盖（测试里调到 0.1 秒，避免拖慢用例）。
+        """
+        if timeout is None:
+            try:
+                timeout = float(os.environ.get("ELH_CONTENT_TIMEOUT", "8"))
+            except ValueError:
+                timeout = 8.0
+        deadline = time.monotonic() + max(0.0, timeout)
+        while time.monotonic() < deadline:
+            try:
+                text = str(self._eval("(document.body ? document.body.innerText : '')") or "")
+            except Exception:
+                text = ""
+            if text.strip():
+                return True
+            time.sleep(0.5)
+        logger.warning("等了 %ss 内容区仍然是空的", int(timeout))
+        return False
+
     def _remember_list_url(self) -> None:
         try:
-            self._list_url = str(self._eval("location.href") or "")
+            self._list_url = str(self._eval("location.href") or "")   # 内容 iframe 的地址
         except Exception:
             self._list_url = ""
+        try:
+            self._outer_url = str(self._eval_top("location.href") or "")  # 外壳地址
+        except Exception:
+            self._outer_url = ""
+        logger.info("课程列表地址: iframe=%s 外壳=%s", self._list_url, self._outer_url)
 
     @staticmethod
     def _courses_from_records(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1036,16 +1124,27 @@ class ISmartClient(PlatformClient):
         return ""
 
     def return_to_list(self) -> bool:
-        """回到课程列表页（用记录的地址，不依赖浏览器历史栈）。"""
+        """回到课程列表（优先把 iframe 拨回去，避免整页重载）。"""
         if not self._list_url:
             return False
         try:
-            self._attach().send("Page.navigate", {"url": self._list_url})
+            # 内容在 iframe 里，改 iframe 的 location 即可，外壳不用重载
+            self._eval("location.href = %s" % json.dumps(self._list_url))
+            time.sleep(2.0)
+            logger.info("已把内容 iframe 拨回课程列表: %s", self._list_url)
+            return True
+        except Exception as exc:
+            logger.warning("iframe 回退失败，改用整页重载: %s", exc)
+
+        if not self._outer_url:
+            return False
+        try:
+            self._attach().send("Page.navigate", {"url": self._outer_url})
         except ISmartError as exc:
             logger.warning("返回课程列表失败: %s", exc)
             return False
-        time.sleep(2.0)  # 等列表渲染
-        logger.info("已返回课程列表: %s", self._list_url)
+        time.sleep(2.5)
+        logger.info("已整页重载回课程列表: %s", self._outer_url)
         return True
 
     def get_course_info(self, cid) -> Tuple[bool, Optional[Dict], str]:
@@ -1072,6 +1171,7 @@ class ISmartClient(PlatformClient):
         )
 
     def get_sco_leaves(self, cid, uid, classid, unit_idx) -> Tuple[bool, List, str]:
+        self._wait_content()
         try:
             raw_tasks = self._eval(self.profile.tasks_js)
         except ISmartError as exc:
