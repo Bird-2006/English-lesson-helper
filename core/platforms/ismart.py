@@ -119,7 +119,7 @@ UNITS_JS = r"""
   const glob = window.__USER__ || window.__user__ || {};
   const uid = glob.id || glob.userId || body.userid || 'cdp';
   const classid = body.classid || 'cdp';
-  const units = [...document.querySelectorAll('[data-unitid],li.unit-item,div.unit-item')]
+  const units = Array.from(document.querySelectorAll('[data-unitid],li.unit-item,div.unit-item'))
     .map((el, i) => ({
       id: (el.dataset && el.dataset.unitid) || String(i),
       name: ((el.innerText || '').split('\n')[0] || ('Unit ' + (i + 1))).trim().slice(0, 120),
@@ -152,7 +152,7 @@ TASKS_JS = r"""
     });
   };
 
-  [...document.querySelectorAll('[data-scoid],[data-taskid],li.task-item,div.task-item')]
+  Array.from(document.querySelectorAll('[data-scoid],[data-taskid],li.task-item,div.task-item'))
     .forEach((el, i) => {
       const ds = el.dataset || {};
       const text = (el.innerText || '').trim();
@@ -245,6 +245,92 @@ def click_task_script(target: str) -> str:
     return fill_task_labels(CLICK_TASK_JS).replace("%(scoid)s", json.dumps(str(target)))
 
 
+#: 教材页（bookLearn.html）里章节行的「学习」按钮：按出现顺序点第 N 个
+CLICK_UNIT_JS = r"""
+(() => {
+  const index = %(index)d;
+  const labelOf = (el) => ((el.innerText || el.value || el.getAttribute('title') ||
+    el.getAttribute('aria-label') || '') + '').trim();
+  const nodes = Array.from(document.querySelectorAll('a,button,input[type=button],[role=button]'))
+    .filter((el) => {
+      const t = labelOf(el);
+      return (t === '学习' || t === '继续学习') && el.getBoundingClientRect().width > 0;
+    });
+  const el = nodes[index];
+  if (!el) return false;
+  el.scrollIntoView({ block: 'center' });
+  el.click();
+  return true;
+})()
+"""
+
+#: 章节列表：教材页上「章节：UNIT xxx 0%」这种行 + 对应的「学习」按钮
+UNITS_FROM_BOOK_JS = r"""
+(() => {
+  const out = [];
+  const labelOf = (el) => ((el.innerText || el.value || '') + '').trim();
+  const buttons = Array.from(document.querySelectorAll('a,button,input[type=button],[role=button]'))
+    .filter((el) => {
+      const t = labelOf(el);
+      return (t === '学习' || t === '继续学习') && el.getBoundingClientRect().width > 0;
+    });
+
+  const seen = new Set();
+  const rows = Array.from(document.querySelectorAll('li,div,tr'))
+    .filter((el) => {
+      const t = (el.innerText || '').trim();
+      return t && t.indexOf('章节') === 0 && t.length < 120;
+    });
+  rows.forEach((row) => {
+    const name = (row.innerText || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+    if (!name || seen.has(name)) return;
+    // 章节行内的「学习」按钮序号 = 它在全部按钮里的位置
+    const btn = buttons.find((b) => row.contains(b));
+    const index = btn ? buttons.indexOf(btn) : -1;
+    if (index < 0) return;
+    seen.add(name);
+    out.push({ id: 'unit:' + index, name: name, selector: '', isvisible: 'true', iscomplete: '未完成' });
+  });
+  return out;
+})()
+"""
+
+#: 视频页：点播放（有的用 <button>play</button>，有的用 <video>）
+PLAY_VIDEO_JS = r"""
+(() => {
+  const video = document.querySelector('video');
+  if (video) {
+    try {
+      video.muted = true;
+      const p = video.play();
+      if (p && p.catch) p.catch(() => {});
+    } catch (e) {}
+  }
+  const labelOf = (el) => ((el.innerText || el.value || el.getAttribute('title') || '') + '').trim();
+  const btn = Array.from(document.querySelectorAll('a,button,div,span,input,[role=button]'))
+    .find((el) => labelOf(el).toLowerCase() === 'play' && el.getBoundingClientRect().width > 0);
+  if (btn) { btn.click(); return true; }
+  return !!video;
+})()
+"""
+
+#: 读取进度文本（如「已学0 全部0」「00时00分49秒」）
+READ_PROGRESS_JS = r"""
+(() => {
+  const text = (document.body ? document.body.innerText : '').replace(/\s+/g, ' ');
+  const learned = text.match(/已学\s*([\d.]+)/);
+  const all = text.match(/全部\s*([\d.]+)/);
+  const time = text.match(/(\d{2}:\d{2}:\d{2})/);
+  return {
+    learned: learned ? Number(learned[1]) : null,
+    total: all ? Number(all[1]) : null,
+    currentTime: time ? time[1] : null,
+    hasVideo: !!document.querySelector('video')
+  };
+})()
+"""
+
+
 #: 默认提交流程：点开任务 → 等渲染 → 依次试提交文案 → 等回包 → 判定
 DEFAULT_SUBMIT_STEPS: List[Dict[str, Any]] = [
     {"kind": "click_task", "scoid": "{scoid}"},
@@ -257,7 +343,7 @@ DEFAULT_SUBMIT_STEPS: List[Dict[str, Any]] = [
 CLICK_TASK_JS = r"""
 (() => {
   const target = String(%(scoid)s);
-  // 「card:序号」= 学生中心的课程卡片；「task:序号」= 课程页里的任务条目。
+  // 「card:序号」= 学生中心的课程卡片；「task:序号」= 课程页里的任务条目
   // 两类都按「按钮文案 + 出现顺序」定位，因为页面没有稳定 data-id（实测学生中心如此）。
   const m = target.match(/^(card|task):(\d+)$/);
   if (m) {
@@ -281,7 +367,7 @@ CLICK_TASK_JS = r"""
     el.click();
     return true;
   }
-  const nodes = [...document.querySelectorAll('[data-scoid],[data-taskid]')];
+  const nodes = Array.from(document.querySelectorAll('[data-scoid],[data-taskid]'));
   for (const el of nodes) {
     const ds = el.dataset || {};
     if (String(ds.scoid || ds.taskid || '') === target) { el.click(); return true; }
@@ -295,7 +381,7 @@ CLICK_TEXT_JS = r"""
   const want = %(text)s;
   const labelOf = (el) => ((el.innerText || el.value || el.getAttribute('title') ||
     el.getAttribute('aria-label') || '') + '').trim();
-  const nodes = [...document.querySelectorAll('button,a,div,span,li,input,[role=button]')];
+  const nodes = Array.from(document.querySelectorAll('button,a,div,span,li,input,[role=button]'));
   const hit = nodes.find(el => labelOf(el) === want);
   if (hit) { hit.scrollIntoView && hit.scrollIntoView({ block: 'center' }); hit.click(); return true; }
   const soft = nodes.find(el => {
@@ -609,7 +695,34 @@ def launch_client(port: int = DEFAULT_PORT, executable: str = None, wait_seconds
             suffix = "（已提权启动）" if elevated else ""
             return True, f"客户端已启动，调试端口 {port} 就绪{suffix}"
         time.sleep(0.5)
-    return False, f"客户端已启动，但 {int(wait_seconds)} 秒内调试端口 {port} 未就绪"
+
+    # 端口没起来：把客户端进程的真实命令行捞出来，判断参数到底有没有生效
+    command_line = client_command_line()
+    running = client_running()
+    if not running and not command_line:
+        return False, (
+            f"客户端已启动，但 {int(wait_seconds)} 秒内调试端口 {port} 未就绪，"
+            "而且没找到客户端进程（可能启动后立刻退出了）。"
+        )
+    if running and not command_line:
+        return False, (
+            f"客户端进程在运行，但调试端口 {port} 没起来，而且当前权限读不到它的命令行"
+            "（多半是以管理员运行的）。\n"
+            "单实例客户端重新启动只会激活旧进程 —— 请彻底退出客户端（托盘也退），"
+            "再点「🚀 启动并连接」并在 UAC 弹窗点「是」。"
+        )
+    if f"--remote-debugging-port={port}" not in command_line:
+        return False, (
+            f"客户端进程在运行，但命令行里没有 --remote-debugging-port={port}。\n"
+            "说明这次启动被单实例机制接管了（旧进程没带调试参数）。\n"
+            "请彻底退出客户端（托盘也要退出）后重试。\n"
+            f"当前命令行：{command_line[:160]}"
+        )
+    return False, (
+        f"客户端已带 --remote-debugging-port={port} 启动，但端口仍未就绪。\n"
+        "该客户端可能不是 Chromium 内核（无法用 CDP 驱动），或调试端口被安全软件拦了。\n"
+        f"当前命令行：{command_line[:160]}"
+    )
 
 
 def normalize_url(url: str) -> str:
@@ -625,10 +738,61 @@ def normalize_url(url: str) -> str:
 
 def _short_error(exc: BaseException) -> str:
     """把 requests/urllib3 的长堆栈压成一句人话。"""
+    if isinstance(exc, KeyError):
+        return f"返回内容缺少字段 {exc}"
     text = str(exc)
     if "Max retries exceeded" in text or "Connection refused" in text or "10061" in text:
         return "端口未开放"
+    if "timed out" in text.lower():
+        return "响应超时"
     return type(exc).__name__
+
+
+def client_command_line(image: str = "iSmart.exe") -> str:
+    """取客户端进程的完整命令行（判断调试参数有没有真的带上去）。
+
+    先用 ``wmic``，它在 Windows 11 24H2 起被移除了，所以再退回 PowerShell CIM。
+    """
+    commands = [
+        ["wmic", "process", "where", f"name='{image}'", "get", "CommandLine", "/format:list"],
+        [
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            f"(Get-CimInstance Win32_Process -Filter \"name='{image}'\").CommandLine",
+        ],
+    ]
+    for command in commands:
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=12,
+                creationflags=0x08000000 if os.name == "nt" else 0,
+            )
+        except Exception as exc:
+            logger.debug("读取客户端命令行失败（%s）: %s", command[0], exc)
+            continue
+        for line in (result.stdout or "").splitlines():
+            line = line.strip()
+            if not line or line.startswith("CommandLine=") is False and command[0] == "wmic":
+                continue
+            value = line.split("=", 1)[1].strip() if line.startswith("CommandLine=") else line
+            if value and image.lower() in value.lower():
+                return value
+    return ""
+
+
+def _browser_name(version: Any) -> str:
+    """从 /json/version 里挑一个可读的标识（老客户端 Browser 字段是空的）。"""
+    if not isinstance(version, dict):
+        return "未知端点"
+    for key in ("Browser", "User-Agent", "Protocol-Version"):
+        value = str(version.get(key) or "").strip()
+        if value:
+            return value[:60]
+    return "未知端点"
 
 
 def extract_list(payload: Any) -> List[Dict[str, Any]]:
@@ -729,6 +893,10 @@ class CDPSession:
 
         self._next_id = 0
         self.session_id: Optional[str] = None
+        #: 老内核（如 Chrome 49）走页面级附着，没有 Target 域
+        self.legacy: bool = False
+        self.target_url: str = ""
+        self.target_title: str = ""
         self.timeout = timeout
         try:
             self._ws = websocket.create_connection(ws_url, timeout=timeout, suppress_origin=True)
@@ -739,13 +907,26 @@ class CDPSession:
     def attach_to_browser(cls, port: int, host_keyword: str = "") -> "CDPSession":
         """连到浏览器级端点，挑选页面 target 并建立 flattened session。"""
         try:
-            version = requests.get(f"http://127.0.0.1:{port}/json/version", timeout=3).json()
-            ws_url = version["webSocketDebuggerUrl"]
+            raw = requests.get(f"http://127.0.0.1:{port}/json/version", timeout=3).json()
         except Exception as exc:
             raise ISmartError(f"无法读取浏览器调试信息（{_short_error(exc)}）") from exc
 
+        # 有的壳（CEF/自研 Chromium）返回的 JSON 不带 webSocketDebuggerUrl，
+        # 这时退回 /json/list 里某个页面的 ws 地址（直接取键会抛 KeyError，实测踩过）
+        ws_url = raw.get("webSocketDebuggerUrl") if isinstance(raw, dict) else None
+        if not ws_url:
+            logger.info("端点未提供浏览器级 ws（%s），改用页面级附着", _browser_name(raw))
+            return cls.attach_page(port, host_keyword)
+
         session = cls(ws_url)
-        targets = session.send("Target.getTargets").get("targetInfos", [])
+        try:
+            targets = session.send("Target.getTargets").get("targetInfos", [])
+        except ISmartError as exc:
+            # Chrome 49 这类老内核没有 Target 域（报 "wasn't found"），只能用页面级 WS
+            logger.info("浏览器级 Target 域不可用（%s），改用页面级附着", exc)
+            session.close()
+            return cls.attach_page(port, host_keyword)
+
         pages = [info for info in targets if info.get("type") == "page"]
         keyword = (host_keyword or "").lower()
         chosen = None
@@ -777,6 +958,56 @@ class CDPSession:
                 (info.get("url") or "-")[:120],
             )
         logger.info("已附着页面 target=%s url=%s", chosen.get("targetId"), session.target_url)
+        return session
+
+    @classmethod
+    def attach_page(cls, port: int, host_keyword: str = "") -> "CDPSession":
+        """页面级附着：直接连 /json/list 里某个页面的 ws（Chrome 49 这类老内核只有这条路）。
+
+        老内核没有 ``Target.*`` 域，所以不需要 sessionId，命令直接发在页面连接上。
+        """
+        pages = discover_pages(port)
+        if not pages:
+            raise ISmartError(
+                "调试端口上没有页面。请确认客户端已打开课程页（老版本客户端只暴露页面级调试接口）"
+            )
+
+        keyword = (host_keyword or "").lower()
+        chosen = None
+        for page in pages:
+            url = (page.get("url") or "").lower()
+            if keyword and keyword in url:
+                chosen = page
+                break
+        if chosen is None:
+            # 优先挑 ismartlearning（真实课程页），避开 about:blank 与自家首页
+            for page in pages:
+                if "ismartlearning" in (page.get("url") or "").lower():
+                    chosen = page
+                    break
+        if chosen is None:
+            for page in pages:
+                url = (page.get("url") or "").lower()
+                if url and not url.startswith("about:") and "ismartin.com" not in url:
+                    chosen = page
+                    break
+        if chosen is None:
+            chosen = pages[0]
+
+        for page in pages:
+            logger.info("  page %s | %s", page.get("title") or "-", (page.get("url") or "-")[:120])
+
+        session = cls(chosen["webSocketDebuggerUrl"])
+        session.target_url = chosen.get("url") or ""
+        session.target_title = chosen.get("title") or ""
+        session.legacy = True
+        try:
+            session.send("Runtime.enable")
+            session.send("Page.enable")
+        except ISmartError as exc:
+            session.close()
+            raise ISmartError(f"页面级附着失败: {exc}") from exc
+        logger.info("已附着页面（页面级）%s", session.target_url)
         return session
 
     def send(self, method: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
@@ -1212,6 +1443,128 @@ class ISmartClient(PlatformClient):
         for task in tasks[:20]:
             logger.info("  %s | %s | %s", task.get("id"), task.get("location"), task.get("selector", ""))
         return result
+
+    # ------------------------------------------------------------ 章节 / 视频
+
+    def _page_list(self, port: int = None) -> List[Dict[str, Any]]:
+        port = port or self.profile.port
+        try:
+            pages = requests.get(f"http://127.0.0.1:{port}/json/list", timeout=3).json()
+            return pages if isinstance(pages, list) else []
+        except Exception as exc:
+            logger.debug("读取页面列表失败: %s", exc)
+            return []
+
+    def discover_units(self) -> List[Dict[str, Any]]:
+        """教材页（bookLearn.html）上的章节列表。"""
+        raw = self._eval_top(UNITS_FROM_BOOK_JS) or []
+        units = [u for u in raw if isinstance(u, dict) and u.get("id")] if isinstance(raw, list) else []
+        logger.info("教材页识别到 %d 个章节", len(units))
+        for unit in units[:12]:
+            logger.info("  %s | %s", unit.get("id"), unit.get("name"))
+        return units
+
+    def click_and_follow(
+        self,
+        script: str,
+        url_pattern: str = "paper.html",
+        wait_seconds: float = 15.0,
+    ) -> Tuple[bool, str, Optional["CDPSession"]]:
+        """点一个会弹新窗口的元素，然后附着到新窗口。
+
+        客户端是 Chrome 49：页面级 CDP 看不到别的窗口，只能点完重新列 ``/json/list``
+        找新增的 target（实测「学习」→ paper.html 就是这么出现的）。
+        """
+        before = {p.get("webSocketDebuggerUrl") for p in self._page_list()}
+        if not self._eval_top(script):
+            return False, "没找到要点击的元素", None
+
+        deadline = time.monotonic() + wait_seconds
+        while time.monotonic() < deadline:
+            time.sleep(0.8)
+            for page in self._page_list():
+                if page.get("webSocketDebuggerUrl") in before:
+                    continue
+                url = page.get("url") or ""
+                if url_pattern and url_pattern not in url:
+                    continue
+                logger.info("新窗口出现: %s", url[:140])
+                reason = url.split("?")[-1]
+                page = dict(page)
+                page["_query"] = reason
+                return True, url, self._attach_specific(page)
+        return False, f"点了之后 {int(wait_seconds)} 秒内没等到 {url_pattern} 新窗口", None
+
+    def _attach_specific(self, page: Dict[str, Any]) -> "CDPSession":
+        session = CDPSession(page["webSocketDebuggerUrl"])
+        session.target_url = page.get("url") or ""
+        session.target_title = page.get("title") or ""
+        session.legacy = True
+        session.send("Runtime.enable")
+        session.send("Page.enable")
+        return session
+
+    def play_video(self, seconds: int, stop_event=None, session: "CDPSession" = None) -> bool:
+        """在作答/学习页里播放视频并保持活跃，攒学习时长。"""
+        session = session or self._session
+        if session is None:
+            return False
+        started = session.evaluate(PLAY_VIDEO_JS)
+        logger.info("点击播放: %s", started)
+        if not started:
+            logger.warning("页面里既没有 video 也没有 play 按钮")
+
+        target = max(1, int(seconds))
+        begin = time.monotonic()
+        while time.monotonic() - begin < target:
+            if stop_event is not None and stop_event.is_set():
+                logger.info("播放被中断，已播放 %ds", int(time.monotonic() - begin))
+                return False
+            time.sleep(min(20.0, max(1.0, target - (time.monotonic() - begin))))
+            try:
+                progress = session.evaluate(READ_PROGRESS_JS) or {}
+                if not isinstance(progress, dict):
+                    progress = {}
+                logger.info(
+                    "进度: 已学 %s / 全部 %s，当前 %s",
+                    progress.get("learned"),
+                    progress.get("total"),
+                    progress.get("currentTime"),
+                )
+                session.evaluate(PLAY_VIDEO_JS)  # 老内核里视频可能暂停，补点一次
+            except ISmartError as exc:
+                logger.warning("读取进度失败: %s", exc)
+                break
+        return True
+
+    def study_units(self, seconds_per_unit: int, stop_event=None, limit: int = None) -> Dict[str, Any]:
+        """遍历教材章节：点学习 → 跟随新窗口 → 播视频攒时长。"""
+        units = self.discover_units()
+        if not units:
+            return {"done": 0, "total": 0, "message": "当前页面不是教材页，先去课程里打开教材"}
+        if limit:
+            units = units[:limit]
+
+        done, failed = 0, []
+        for unit in units:
+            if stop_event is not None and stop_event.is_set():
+                break
+            ok, message, session = self.click_and_follow(
+                CLICK_UNIT_JS % {"index": int(str(unit["id"]).split(":")[1])}
+            )
+            if not ok:
+                failed.append(f"{unit['name']}: {message}")
+                continue
+            logger.info("进入章节 %s → %s", unit.get("name"), message[:100])
+            try:
+                self.play_video(seconds_per_unit, stop_event=stop_event, session=session)
+                done += 1
+            finally:
+                try:
+                    session.close()
+                except Exception:
+                    pass
+        return {"done": done, "total": len(units), "failed": failed}
 
     # ------------------------------------------------------------ 接口调用
 

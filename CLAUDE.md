@@ -23,7 +23,7 @@
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe main.py
 
-# 测试（186 个用例；Qt 相关走 offscreen，conftest.py 已配好插件路径）
+# 测试（251 个用例；Qt 相关走 offscreen，conftest.py 已配好插件路径）
 .\.venv\Scripts\python.exe -m pytest
 
 # 静态检查
@@ -145,12 +145,25 @@ EnglishLessonHelper-portable.spec  便携单文件打包脚本（onefile，uac_a
      该 URL 存在 `ismart_profile.json`，没有它则提示用户填写。
    两者都走 `LaunchClientThread`（后台线程），最长 25 秒。
 1. 用户完成登录 / 打开课程页（桌面客户端或浏览器窗口里）。
-2. **附着方式**：`CDPSession.attach_to_browser(port, host_keyword)` —— 连**浏览器级**
-   `webSocketDebuggerUrl`，用 `Target.getTargets` 实时枚举页面，
-   再 `Target.attachToTarget(targetId, flatten=True)` 拿 `sessionId`，
-   之后所有命令自动带 `sessionId`。失败重试一次（页面刚导航时 target 会切换）。
-   ⚠️ 不要退回「用 `/json/list` 的 id 直接连 page WS」：实测会握手成功但收不到任何回复
-   （服务端报 `No such target id`，表现为 `Runtime.evaluate` 超时）。
+2. **附着方式**：`CDPSession.attach_to_browser(port, host_keyword)` 两条路并存，按端点能力自动选：
+
+   | 端点 | 判定 | 附着方式 |
+   | --- | --- | --- |
+   | 新版 Edge/Chrome | `/json/version` 有 `webSocketDebuggerUrl`，且 `Target.getTargets` 可用 | 浏览器级：`Target.getTargets` 枚举 → `Target.attachToTarget(flatten=True)` 拿 `sessionId` |
+   | **iSmart 桌面客户端** | `/json/version` **没有** `webSocketDebuggerUrl`（`Browser` 为空），或 `Target.getTargets` 报 `wasn't found` | **页面级**：`attach_page()` 直接连 `/json/list` 里某个页面的 ws，命令不带 `sessionId` |
+
+   ⚠️ **客户端实测结论（2026-11 现场验证，别再按旧笔记改回浏览器级）**：
+   `E:\iSmart\client\iSmart.exe` 内嵌 **Chrome/49.0.2623.110**（2016 年内核），UA 为
+   `PC-Up366-iSmart 1.8.0.0 ... Chrome/49.0.2623.110`。它**没有 `Target` 域**，
+   浏览器级 ws 也拿不到，只能页面级附着；页面级附着在这套客户端上 `Runtime.evaluate` /
+   `Page.enable` 全部可用（已实测读到「我的课程」页 130 字正文）。
+   「用 `/json/list` 的 id 连 page WS 收不到回复」那条旧结论只适用于 Edge 的 target 复用场景，
+   对 Chrome 49 客户端不成立。
+
+   ⚠️ **老内核语法限制**：Chrome 49 的 `NodeList` **没有** `Symbol.iterator`，
+   `[...document.querySelectorAll(...)]` 会抛 `(var)[Symbol.iterator] is not a function`。
+   所有注入脚本一律用 `Array.from(...)`（模板字符串、箭头函数、`const`、数组展开本身都支持）。
+   `for...of` 也只能用于真数组。
 3. `CDPSession` 用 `websocket-client`（`suppress_origin=True`），只用到 `Runtime.evaluate` 与
    `Page.captureScreenshot`；
 4. 三个默认 JS（`courses_js` / `units_js` / `tasks_js`）都是**启发式 DOM 扫描**，结果为空时返回
@@ -205,6 +218,32 @@ EnglishLessonHelper-portable.spec  便携单文件打包脚本（onefile，uac_a
   执行录制流程/默认提交步骤 → `return_to_list()` 用 `_list_url` 回到列表；
   页面没有单元/任务元素时 `get_course_info`/`get_sco_leaves` 退化为「整门课程」，不再中断。
 
+### 客户端里的真实层级（2026-11 现场逐层实测，全部只读验证过）
+
+```
+courses.html                 「我的课程」130 字正文，1 个「进入课程」→ card:0 周三5-6节（徐辉 老师）
+  └ course/main.html?courseId=124191&status=1      「课程专题网站-课程主页」
+       主页 测试 活动 问答 下载中心 ｜ 章节卡片「新时代明德大学英语综合…」未开始 → [开始学习]
+  └ course/bookLearn.html?bookId=F4F84DC6…&courseId=124191   「教材学习」
+       章节：UNIT ONE Song of Freedom 0%   [学习]
+       章节：UNIT TWO Living with Integrity 0%   [学习]  … 共 8 个单元
+  └ 点「学习」→ **弹出新窗口**（页面级 CDP 看不到，必须重新列 /json/list）
+       paper.html?chapterId=66BB60…&taskId=66BB60…&paperId=9F468F…&testName=Overview
+       title=在线作答；正文「00时00分49秒 已学0 全部0 / Watch the video… / play / 00:00-02:51」
+       → 这一层才是「作业/学习」本体：**视频攒时长**，或（有题的单元）选择题作答
+```
+
+对应实现：
+- `UNITS_FROM_BOOK_JS` / `discover_units()`：教材页章节行（`章节：xxx` + `学习` 按钮）→ `unit:<按钮序号>`
+- `CLICK_UNIT_JS`：按序号点第 N 个「学习」
+- `click_and_follow(script, "paper.html")`：点完轮询 `/json/list`，发现**新增** target 且 URL 命中 pattern → `_attach_specific()` 附着
+- `PLAY_VIDEO_JS` / `READ_PROGRESS_JS` / `play_video(seconds)`：点播放（`video.play()` + `play` 按钮双保险）、
+  每 20 秒读一次「已学/全部/当前时间」并补点播放（老内核里视频会自己暂停）
+- `study_units(seconds_per_unit)`：遍历章节 → 点学习 → 跟随新窗口 → 播视频，返回 `{done,total,failed}`
+
+⚠️ 客户端是**多窗口**程序：`click_course` 之外的跳转（尤其「学习」）都在新 target 里，
+只盯着当前 session 会看到「点了没反应」（实测 URL 不变就是这么来的）。
+
 ## 状态回传与断点续跑
 
 - `update_status()` 只改本地标签，300ms 合并后发 `status_updated`；`AccountView.update_account_status()`
@@ -227,7 +266,7 @@ EnglishLessonHelper-portable.spec  便携单文件打包脚本（onefile，uac_a
 
 ## 测试与验证现状
 
-- `pytest`：186 用例全绿。含 `test_platforms.py`（注册表、契约、iSmart 无客户端时的失败路径、
+- `pytest`：251 用例全绿。含 `test_platforms.py`（注册表、契约、iSmart 无客户端时的失败路径、
   配置读写、步骤引擎成功/失败/未知步骤、dump_page、core.api 兼容层）、`test_ismart_discovery.py`
   （CDP 端口探测、客户端/浏览器定位、带调试参数启动、超时、错误信息可读性、浏览器模式）、
   `test_ismart_session.py`（sessionId 注入、事件帧跳过、附着重试与放弃）、

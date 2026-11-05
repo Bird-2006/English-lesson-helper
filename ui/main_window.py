@@ -59,6 +59,22 @@ STARTUP_NOTICE = """使用声明：
 感谢您的理解与支持！"""
 
 CHANGELOG = [
+    ("V6.4.6", [
+        "客户端真正接上了：iSmart 桌面客户端内嵌 Chrome 49，没有 Target 域、"
+        "也没有浏览器级 ws —— 新增页面级附着 attach_page()，两条路按端点能力自动选",
+        "修 Chrome 49 语法限制：[...NodeList] 会抛 Symbol.iterator 错误，全部改用 Array.from()",
+        "打通「章节 → 学习 → 新窗口」链路：click_and_follow() 点完重新列 /json/list 找新 target 并附着",
+        "新增 study_units()/play_video()：遍历教材章节、跟随 paper.html 窗口、播放视频攒学习时长",
+        "启动诊断补 PowerShell CIM 回退（wmic 在 Win11 24H2 已移除），"
+        "并区分「进程已退出 / 已在运行被单实例接管 / 带了参数但端口没起」",
+    ]),
+    ("V6.4.5", [
+        "修复连接报 KeyError：客户端端点返回的 JSON 若没有 webSocketDebuggerUrl，"
+        "自动退回 /json/list 的页面 ws；两者都没有则明确提示「不像 CDP」",
+        "启动超时后回读客户端命令行，直接判断是哪一种情况："
+        "①命令行没带调试参数（旧进程占位）②带了但端口没起（非 Chromium 内核/被拦）③进程已退出",
+        "「已经在运行但没开端口」的提示保留，并说明单实例程序重开只会激活旧进程",
+    ]),
     ("V6.4.4", [
         "修复「启动并连接」报 WinError 740：iSmart 客户端清单要求管理员权限，"
         "现在自动改用 UAC 提权启动（ShellExecuteW runas），弹窗点「是」即可",

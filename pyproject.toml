@@ -1,6 +1,6 @@
 [project]
 name = "english-lesson-helper"
-version = "6.4.4"
+version = "6.4.6"
 description = "English Lesson Helper：WeLearn / iSmart 双平台课程助手（PyQt5 桌面端）"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -22,6 +22,9 @@ required-environments = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+    "allow_cdp_attach: 允许用例自行测试 attach_to_browser 内部逻辑（必须自备替身，不能真连浏览器）",
+]
 
 [tool.ruff]
 line-length = 120

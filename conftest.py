@@ -27,13 +27,19 @@ if ROOT not in sys.path:
 
 
 @pytest.fixture(autouse=True)
-def _never_attach_to_real_browser(monkeypatch):
+def _never_attach_to_real_browser(request, monkeypatch):
     """测试期间禁止附着实机浏览器。
 
     用户可能正开着「浏览器模式」的 Edge（端口 9222，且已登录），
     若测试直接走 ``CDPSession.attach_to_browser`` 就会点到真实页面上去。
     需要真实浏览器的验证脚本请放在 tests/ 之外单独运行。
+
+    确实要测 ``attach_to_browser`` 内部逻辑的用例，加 ``@pytest.mark.allow_cdp_attach``
+    自行把 requests / 底层会话替换成替身即可（不会真的连本机浏览器）。
     """
+    if "allow_cdp_attach" in request.keywords:
+        return
+
     try:
         from core.platforms import ismart
     except Exception:  # 依赖缺失时不必阻断其它测试
