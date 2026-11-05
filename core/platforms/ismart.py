@@ -539,30 +539,75 @@ def find_client_executable() -> Optional[str]:
     return None
 
 
-def launch_client(port: int = DEFAULT_PORT, executable: str = None, wait_seconds: float = 25.0) -> Tuple[bool, str]:
-    """带调试端口启动客户端，并等端口就绪。"""
+def client_running(image: str = "iSmart.exe") -> bool:
+    """客户端进程是否在跑（在跑但没开调试端口时，需要用户先退出它）。"""
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", f"IMAGENAME eq {image}", "/NH"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            creationflags=0x08000000 if os.name == "nt" else 0,  # CREATE_NO_WINDOW
+        )
+        return image.lower() in (result.stdout or "").lower()
+    except Exception:
+        return False
+
+
+def _shell_execute_runas(exe: str, arguments: str) -> bool:
+    """用 UAC 提权启动（客户端清单要求管理员权限时 Popen 会报 WinError 740）。"""
+    try:
+        import ctypes
+
+        rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", exe, arguments, None, 1)
+        return int(rc) > 32  # >32 表示成功
+    except Exception as exc:
+        logger.warning("提权启动失败: %s", exc)
+        return False
+
+
+def launch_client(port: int = DEFAULT_PORT, executable: str = None, wait_seconds: float = 30.0) -> Tuple[bool, str]:
+    """带调试端口启动客户端，并等端口就绪（需要时自动走 UAC 提权）。"""
     exe = executable or find_client_executable()
     if not exe:
         return False, "未找到 iSmart 客户端可执行文件，请先安装桌面客户端"
 
-    try:
-        # 新版 Chromium 只在来源可信时才接受 WS 连接，客户端内部页面互连需要这个开关
-        subprocess.Popen(
-            [
-                exe,
-                f"--remote-debugging-port={port}",
-                "--remote-allow-origins=*",
-                "--remote-debugging-address=127.0.0.1",
-            ],
-            close_fds=True,
+    if probe_cdp_port(port) is None and client_running():
+        return False, (
+            "iSmart 客户端已经在运行，但没有开调试端口。\n"
+            "请先完全退出客户端（托盘图标也要退出），再点「🚀 启动并连接」。\n"
+            "客户端是单实例的，重新启动只会激活旧进程。"
         )
-    except Exception as exc:
-        return False, f"启动客户端失败: {exc}"
+
+    args = [
+        f"--remote-debugging-port={port}",
+        "--remote-allow-origins=*",
+        "--remote-debugging-address=127.0.0.1",
+    ]
+    elevated = False
+    try:
+        subprocess.Popen([exe, *args], close_fds=True)
+    except OSError as exc:
+        # WinError 740：目标程序要求提升权限
+        needs_uac = getattr(exc, "winerror", None) == 740 or "740" in str(exc)
+        if not needs_uac:
+            return False, f"启动客户端失败: {exc}"
+        logger.info("客户端需要管理员权限，改用 UAC 提权启动")
+        if not _shell_execute_runas(exe, " ".join(args)):
+            return False, (
+                "客户端要求管理员权限，提权启动没成功。\n"
+                "请在 UAC 弹窗里点「是」；或右键本工具「以管理员身份运行」后重试。"
+            )
+        elevated = True
+
+    if elevated:
+        logger.info("已请求提权启动，等待调试端口（UAC 确认可能需要几秒）")
 
     deadline = time.monotonic() + wait_seconds
     while time.monotonic() < deadline:
         if probe_cdp_port(port):
-            return True, f"客户端已启动，调试端口 {port} 就绪"
+            suffix = "（已提权启动）" if elevated else ""
+            return True, f"客户端已启动，调试端口 {port} 就绪{suffix}"
         time.sleep(0.5)
     return False, f"客户端已启动，但 {int(wait_seconds)} 秒内调试端口 {port} 未就绪"
 
