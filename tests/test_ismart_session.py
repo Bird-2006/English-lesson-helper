@@ -60,35 +60,50 @@ def test_send_ignores_event_frames():
     assert session.send("Runtime.evaluate") == {"value": 2}
 
 
-def test_attach_retries_once_then_succeeds(monkeypatch):
+def test_attach_does_not_retry(monkeypatch):
+    """Chrome 49 客户端对并发调试连接很敏感：失败后再试一次会把端点搞坏，所以只试一次。"""
     client = ISmartClient(ISmartProfile(port=9500))
     calls = {"n": 0}
 
-    class _Ok:
-        session_id = "S"
-
-        def send(self, method, params=None):
-            return {}
-
-        def close(self):
-            pass
-
     def fake_attach(port, keyword=""):
         calls["n"] += 1
-        if calls["n"] == 1:
-            raise ISmartError("target 还在切换")
-        return _Ok()
+        raise ISmartError("Connection timed out")
 
     monkeypatch.setattr(CDPSession, "attach_to_browser", staticmethod(fake_attach))
     monkeypatch.setattr("core.platforms.ismart.find_cdp_port", lambda *a, **k: 9500)
 
-    session = client._attach()
-    assert calls["n"] == 2
-    assert client._session is session
+    with pytest.raises(ISmartError):
+        client._attach()
+    assert calls["n"] == 1
     client.close()
 
 
-def test_attach_gives_up_after_two_failures(monkeypatch):
+def test_attach_closes_session_when_enable_fails(monkeypatch):
+    """Runtime.enable 失败时必须关掉连接，否则会泄漏（客户端只能扛少量并发）。"""
+    client = ISmartClient(ISmartProfile(port=9502))
+    closed = {"n": 0}
+
+    class _Session:
+        session_id = "S"
+        target_url = ""
+        target_title = ""
+
+        def send(self, method, params=None):
+            raise ISmartError("Runtime.enable 超时")
+
+        def close(self):
+            closed["n"] += 1
+
+    monkeypatch.setattr(CDPSession, "attach_to_browser", staticmethod(lambda port, keyword="": _Session()))
+    monkeypatch.setattr("core.platforms.ismart.find_cdp_port", lambda *a, **k: 9502)
+
+    with pytest.raises(ISmartError):
+        client._attach()
+    assert closed["n"] == 1
+    client.close()
+
+
+def test_attach_gives_up_after_failure(monkeypatch):
     client = ISmartClient(ISmartProfile(port=9501))
     monkeypatch.setattr(
         CDPSession,

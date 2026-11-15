@@ -11,6 +11,7 @@ from core.platforms import (
     PLATFORMS,
     create_client,
     get_info,
+    ismart,
     key_from_name,
     name_from_key,
     platform_names,
@@ -126,10 +127,17 @@ def test_ismart_get_courses_fails_cleanly_without_client():
     client.close()
 
 
-def test_discover_pages_raises_ismart_error():
+def test_discover_pages_raises_ismart_error(monkeypatch):
+    """端口连不上时转成 ISmartError（文案给「调试端口」，不甩 urllib3 堆栈）。"""
+
+    def boom(url, timeout=3):
+        raise ConnectionError("Connection refused")
+
+    monkeypatch.setattr(ismart, "local_get", boom)   # 本机调试端点走 local_get（绕代理）
     with pytest.raises(ISmartError) as excinfo:
         discover_pages(port=1, timeout=0.2)
     assert "调试端口" in str(excinfo.value)
+    assert "端口未开放" in str(excinfo.value)
 
 
 # ---------------------------------------------------------------- 配置

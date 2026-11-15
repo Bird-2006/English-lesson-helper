@@ -1,6 +1,6 @@
 [project]
 name = "english-lesson-helper"
-version = "6.4.6"
+version = "6.4.7"
 description = "English Lesson Helper：WeLearn / iSmart 双平台课程助手（PyQt5 桌面端）"
 readme = "README.md"
 requires-python = ">=3.9"

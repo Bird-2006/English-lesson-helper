@@ -43,7 +43,7 @@ class _Resp:
 @pytest.mark.allow_cdp_attach
 def test_attach_without_browser_ws_uses_page_attach(monkeypatch):
     """/json/version 不带 webSocketDebuggerUrl（iSmart 客户端 Chrome 49）→ 走页面级附着。"""
-    monkeypatch.setattr(ismart.requests, "get", lambda url, timeout=3, **kw: _Resp({
+    monkeypatch.setattr(ismart, "local_get", lambda url, timeout=3, **kw: _Resp({
         "Browser": "", "User-Agent": "PC-Up366-iSmart 1.8.0.0 ... Chrome/49.0.2623.110",
     }))
 
@@ -61,7 +61,7 @@ def test_attach_without_browser_ws_uses_page_attach(monkeypatch):
 @pytest.mark.allow_cdp_attach
 def test_attach_falls_back_when_target_domain_missing(monkeypatch):
     """浏览器级 ws 存在但 Target 域不存在（老内核）时，也退回页面级。"""
-    monkeypatch.setattr(ismart.requests, "get", lambda url, timeout=3, **kw: _Resp({
+    monkeypatch.setattr(ismart, "local_get", lambda url, timeout=3, **kw: _Resp({
         "webSocketDebuggerUrl": "ws://browser/1",
     }))
 

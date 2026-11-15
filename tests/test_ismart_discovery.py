@@ -73,16 +73,32 @@ def test_probe_ignores_non_cdp_server():
         server.server_close()
 
 
+def _closed_port() -> int:
+    """找一个**确认没有服务**的端口。
+
+    不能写死 1：本机实测 iSmart 客户端自己就监听 ``127.0.0.1:1`` 并转发到 devtools，
+    于是「端口 1 是关闭的」这个前提并不成立（踩过）。
+    """
+    import socket
+
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    return port
+
+
 def test_probe_ignores_closed_port():
-    assert probe_cdp_port(1, timeout=0.3) is None
+    assert probe_cdp_port(_closed_port(), timeout=0.3) is None
 
 
 def test_find_cdp_port_returns_first_live_port():
     server = _serve(_CDPHandler)
     live = server.server_address[1]
+    closed = _closed_port()
     try:
-        assert find_cdp_port((1, live), timeout=0.3) == live
-        assert find_cdp_port((1,), timeout=0.2) is None
+        assert find_cdp_port((closed, live), timeout=0.3) == live
+        assert find_cdp_port((closed,), timeout=0.2) is None
     finally:
         server.shutdown()
         server.server_close()
